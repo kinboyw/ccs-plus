@@ -5,7 +5,7 @@
 help:
 	@echo "Common targets:"
 	@echo "  make install       Sync project and development dependencies"
-	@echo "  make release       Install this project in editable mode"
+	@echo "  make release       Install this project"
 	@echo "  make test          Run the test suite"
 	@echo "  make check         Run lint and apply formatting"
 	@echo "  make binary        Build a local one-file binary with PyInstaller"

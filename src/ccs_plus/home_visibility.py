@@ -6,9 +6,9 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Collection, Mapping, MutableMapping
-from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +57,7 @@ class DisabledHomeVisibility(HomeVisibility):
 @dataclass(frozen=True)
 class ClaudeHomeVisibility(HomeVisibility):
     mcp_key: str = ""
+    settings_keys: tuple[str, ...] = ()
     skills: EntryVisibilitySettings = field(default_factory=EntryVisibilitySettings)
     plugins: EntryVisibilitySettings = field(default_factory=EntryVisibilitySettings)
 
@@ -76,6 +77,47 @@ class ClaudeHomeVisibility(HomeVisibility):
             copy_names=self.plugins.copy_names,
         )
         self._merge_mcp_servers(self.user_home.parent / ".claude.json")
+        self._merge_settings_keys()
+
+    def _merge_settings_keys(self) -> None:
+        """Project configured keys from the user settings.json into the isolated one.
+
+        Plugin enablement and marketplace registrations must match the user home:
+        the plugin cache is a shared junction, so an isolated sweep that sees
+        fewer enabled plugins would mark the other home's cache entries orphaned.
+        """
+        if self.user_home is None or not self.settings_keys:
+            return
+        source_document = _read_json_object(
+            self.user_home / "settings.json", "Claude settings source"
+        )
+        if source_document is None:
+            return
+        additions = {
+            key: source_document[key] for key in self.settings_keys if key in source_document
+        }
+        if not additions:
+            return
+
+        target = self.state_home / "settings.json"
+        existing_document = (
+            _read_json_object(target, "Claude settings target") if target.exists() else {}
+        )
+        if existing_document is None:
+            return
+        output = dict(existing_document)
+        changed = False
+        for key, incoming in additions.items():
+            merged_value = _merged_json_value(existing_document.get(key), incoming)
+            if merged_value != existing_document.get(key):
+                changed = True
+            output[key] = merged_value
+        if not changed:
+            return
+        try:
+            _write_json_atomic(target, output)
+        except OSError as exc:
+            logger.warning("Failed to write Claude settings merge to %s: %s", target, exc)
 
     def _merge_mcp_servers(self, source: Path) -> None:
         source_document = _read_json_object(source, "Claude MCP source")
@@ -128,7 +170,6 @@ class CodexHomeVisibility(HomeVisibility):
             skip_names=self.plugins.skip_names,
             copy_names=self.plugins.copy_names,
         )
-        self._ensure_isolated_plugin_cache()
         if self.is_official:
             self._merge_into_state()
 
@@ -138,17 +179,15 @@ class CodexHomeVisibility(HomeVisibility):
             return
         source = self.user_home / "sessions"
         target = self.state_home / "sessions"
+        source_was_present = source.is_dir()
         try:
             source.mkdir(parents=True, exist_ok=True)
             target.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise OSError(f"Failed to prepare Codex session paths: {exc}") from exc
-        if _path_lexists(target):
+        if not source_was_present and _path_lexists(target):
             return
-        try:
-            _link_directory(source, target)
-        except OSError as exc:
-            logger.warning("Failed to link Codex sessions %s -> %s: %s", target, source, exc)
+        _link_one(source, target)
 
     def merge_into(self, document: TOMLDocument) -> None:
         state_document = _read_toml(self.state_home / "config.toml", "Codex state")
@@ -161,16 +200,12 @@ class CodexHomeVisibility(HomeVisibility):
             _merge_named_table(document, key, document, state_document, user_document)
         if user_document is not None:
             _merge_current_project_trust(document, user_document, self.project_directory)
-        self._prune_unregistered_plugin_caches(document)
 
     def _merge_into_state(self) -> None:
         if self.user_home is None:
             return
         user_document = _read_toml(self.user_home / "config.toml", "Codex user")
         if user_document is None:
-            self._prune_unregistered_plugin_caches(
-                _read_toml(self.state_home / "config.toml", "Codex state") or tomlkit.document()
-            )
             return
         path = self.state_home / "config.toml"
         with _toml_lock(path):
@@ -180,82 +215,7 @@ class CodexHomeVisibility(HomeVisibility):
             for key in self.profile_extension_keys:
                 _merge_named_table(document, key, document, user_document)
             _merge_current_project_trust(document, user_document, self.project_directory)
-            self._prune_unregistered_plugin_caches(document)
             _write_toml_atomic(path, document)
-
-    def _ensure_isolated_plugin_cache(self) -> None:
-        if self.user_home is None:
-            return
-        user_cache = self.user_home / "plugins" / "cache"
-        state_cache = self.state_home / "plugins" / "cache"
-        if _is_link(state_cache) and _links_to(state_cache, user_cache):
-            try:
-                _remove_link(state_cache)
-            except OSError as exc:
-                logger.warning(
-                    "Failed to detach shared Codex plugin cache %s: %s", state_cache, exc
-                )
-                return
-        if _path_lexists(state_cache):
-            return
-        try:
-            state_cache.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            logger.warning("Failed to create isolated Codex plugin cache %s: %s", state_cache, exc)
-
-    def _prune_unregistered_plugin_caches(self, document: TOMLDocument) -> None:
-        if self.user_home is None:
-            return
-        plugins = document.get("plugins")
-        if not isinstance(plugins, Mapping):
-            logger.warning(
-                "Skipping Codex plugin cache cleanup because plugin registrations are unavailable."
-            )
-            return
-        registered = {
-            name
-            for name, settings in plugins.items()
-            if isinstance(name, str)
-            and isinstance(settings, Mapping)
-            and settings.get("enabled") is not False
-        }
-        cache = self.user_home / "plugins" / "cache"
-        try:
-            marketplaces = list(cache.iterdir()) if cache.is_dir() else []
-        except OSError as exc:
-            logger.warning("Failed to scan Codex plugin cache %s: %s", cache, exc)
-            return
-        for marketplace in marketplaces:
-            if not marketplace.is_dir():
-                continue
-            try:
-                plugin_dirs = list(marketplace.iterdir())
-            except OSError as exc:
-                logger.warning("Failed to scan Codex plugin cache %s: %s", marketplace, exc)
-                continue
-            for plugin_dir in plugin_dirs:
-                if not plugin_dir.is_dir():
-                    continue
-                plugin_id = f"{plugin_dir.name}@{marketplace.name}"
-                if plugin_id not in registered:
-                    if _is_link(plugin_dir):
-                        logger.warning(
-                            "Refusing to remove linked unregistered Codex plugin cache %s.",
-                            plugin_id,
-                        )
-                        continue
-                    try:
-                        shutil.rmtree(plugin_dir)
-                    except OSError as exc:
-                        logger.warning(
-                            "Failed to remove unregistered Codex plugin cache %s: %s",
-                            plugin_id,
-                            exc,
-                        )
-                    else:
-                        logger.info("Removed unregistered Codex plugin cache %s", plugin_id)
-            with suppress(OSError):
-                marketplace.rmdir()
 
 
 @dataclass(frozen=True)
@@ -336,6 +296,7 @@ def home_visibility_for(
             state_home=state_home,
             user_home=settings.claude.user_home,
             mcp_key=settings.claude.visibility.mcp_key,
+            settings_keys=settings.claude.visibility.settings_keys,
             skills=settings.claude.visibility.skills,
             plugins=settings.claude.visibility.plugins,
         )
@@ -411,28 +372,43 @@ def link_user_entries(
     real home need no link. Other files are hardlinked then symlinked. Names in
     *skip_names* are never touched on the target side.
 
-    Never links *source_dir* itself as a single unit. Existing real entries in
-    *target_dir* are left untouched. Dangling links are removed. Failures log a
-    warning and do not raise.
+    Never links *source_dir* itself as a single unit. Source entries are
+    authoritative: any conflicting target file, directory, or incorrect link
+    is replaced. Dangling links are removed. Failures log a warning and do not
+    raise.
     """
     try:
         if not source_dir.is_dir():
             return
-        target_dir.mkdir(parents=True, exist_ok=True)
-        _cleanup_dangling_links(target_dir)
-        skip = set(skip_names)
-        copy = set(copy_names)
-        for source_entry in sorted(source_dir.iterdir(), key=lambda path: path.name.lower()):
-            name = source_entry.name
-            if name in skip:
-                continue
-            target_entry = target_dir / name
-            if name in copy and source_entry.is_file():
-                _copy_file(source_entry, target_entry)
-            else:
-                _link_one(source_entry, target_entry)
+        if _path_key(source_dir) == _path_key(target_dir):
+            return
+        lock_path = target_dir.parent / f".{target_dir.name}.ccs-plus.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(str(lock_path), timeout=30):
+            _link_user_entries(source_dir, target_dir, skip_names, copy_names)
     except OSError as exc:
         logger.warning("Failed to prepare links from %s into %s: %s", source_dir, target_dir, exc)
+
+
+def _link_user_entries(
+    source_dir: Path,
+    target_dir: Path,
+    skip_names: Collection[str],
+    copy_names: Collection[str],
+) -> None:
+    _prepare_target_directory(source_dir, target_dir)
+    _cleanup_dangling_links(target_dir)
+    skip = set(skip_names)
+    copy = set(copy_names)
+    for source_entry in sorted(source_dir.iterdir(), key=lambda path: path.name.lower()):
+        name = source_entry.name
+        if name in skip:
+            continue
+        target_entry = target_dir / name
+        if name in copy and source_entry.is_file():
+            _copy_file(source_entry, target_entry)
+        else:
+            _link_one(source_entry, target_entry)
 
 
 def _read_json_object(path: Path, label: str) -> dict[str, Any] | None:
@@ -456,6 +432,16 @@ def _mapping_or_empty(value: object, path: Path) -> dict[str, Any] | None:
         logger.warning("Skipping visibility merge; expected an object in %s", path)
         return None
     return value
+
+
+def _merged_json_value(existing: object, incoming: object) -> object:
+    """Union-merge mapping values (incoming wins on conflict); otherwise replace."""
+    if isinstance(existing, Mapping) and isinstance(incoming, Mapping):
+        merged = dict(existing)
+        for name, value in incoming.items():
+            merged[name] = deepcopy(value)
+        return merged
+    return deepcopy(incoming)
 
 
 def _read_toml(path: Path, label: str) -> TOMLDocument | None:
@@ -537,24 +523,27 @@ def _cleanup_dangling_links(target_dir: Path) -> None:
         if _link_destination_exists(entry):
             continue
         try:
-            entry.unlink(missing_ok=True)
+            _remove_target(entry)
             logger.warning("Removed dangling link %s", entry)
         except OSError as exc:
             logger.warning("Failed to remove dangling link %s: %s", entry, exc)
+
+
+def _prepare_target_directory(source_dir: Path, target_dir: Path) -> None:
+    """Keep an isolated entry container while rejecting conflicting roots."""
+    if _path_lexists(target_dir) and (_is_link(target_dir) or not target_dir.is_dir()):
+        _remove_target(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _link_one(source: Path, target: Path) -> None:
     if _path_lexists(target):
         if _is_link(target) and _links_to(target, source):
             return
-        if _is_link(target) and not _link_destination_exists(target):
-            try:
-                target.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning("Failed to replace dangling link %s: %s", target, exc)
-                return
-        else:
-            # Real entry or link to a different target: isolation side wins.
+        try:
+            _remove_target(target)
+        except OSError as exc:
+            logger.warning("Failed to replace target %s: %s", target, exc)
             return
 
     try:
@@ -566,16 +555,6 @@ def _link_one(source: Path, target: Path) -> None:
         return
     except OSError as exc:
         logger.warning("Failed to link %s -> %s: %s", target, source, exc)
-
-
-def _remove_link(path: Path) -> None:
-    if path.is_symlink():
-        path.unlink()
-        return
-    if os.name == "nt":
-        path.rmdir()
-        return
-    path.unlink()
 
 
 def _link_directory(source: Path, target: Path) -> None:
@@ -612,9 +591,57 @@ def _copy_file(source: Path, target: Path) -> None:
     if _is_link(target) and _links_to(target, source):
         return
     try:
+        if _path_lexists(target):
+            _remove_target(target)
         shutil.copy2(source, target)
     except OSError as exc:
         logger.warning("Failed to copy %s -> %s: %s", target, source, exc)
+
+
+def _remove_target(path: Path) -> None:
+    """Remove a conflicting state entry without following directory links."""
+    if _is_link(path):
+        _remove_link(path)
+    elif path.is_dir():
+        shutil.rmtree(path, onerror=_remove_readonly_and_retry)
+    else:
+        _remove_readonly_and_retry(os.unlink, path, None)
+
+
+def _remove_link(path: Path) -> None:
+    try:
+        if path.is_symlink():
+            path.unlink()
+        elif os.name == "nt":
+            path.rmdir()
+        else:
+            path.unlink()
+    except PermissionError:
+        _make_writable(path)
+        if path.is_symlink():
+            path.unlink()
+        elif os.name == "nt":
+            path.rmdir()
+        else:
+            path.unlink()
+
+
+def _remove_readonly_and_retry(function: object, path: str | Path, _exc_info: object) -> None:
+    """Retry an rmtree operation after clearing a Windows read-only flag."""
+    target = Path(path)
+    _make_writable(target)
+    cast(Any, function)(path)
+
+
+def _make_writable(path: Path) -> None:
+    if path.is_symlink():
+        return
+    try:
+        mode = path.stat().st_mode
+        os.chmod(path, mode | stat.S_IWRITE)
+    except OSError:
+        # Preserve the original removal error when attributes cannot be read or changed.
+        raise
 
 
 def _path_lexists(path: Path) -> bool:
