@@ -149,6 +149,7 @@ jobs:
       contents: write
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Download all binaries
