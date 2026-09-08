@@ -93,6 +93,25 @@ def test_frozen_binary_prefers_settings_next_to_executable(
     assert settings.proxy == "http://local-proxy:7890"
 
 
+def test_installed_package_uses_cwd_when_project_root_has_no_settings(
+    settings_root, monkeypatch, tmp_path: Path
+) -> None:
+    missing_root = tmp_path / "site-packages-parent"
+    missing_root.mkdir()
+    runtime_root = tmp_path / "workdir"
+    runtime_root.mkdir()
+    (runtime_root / "settings.yaml").write_text(
+        (settings_root / "settings.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ccs_plus.settings.PROJECT_ROOT", missing_root)
+    monkeypatch.chdir(runtime_root)
+
+    settings = load_settings()
+
+    assert settings.project_root == runtime_root.resolve()
+
+
 def test_environment_overrides_nested_settings(settings_root, monkeypatch) -> None:
     monkeypatch.setenv("CCS_PLUS_PROXY", "http://127.0.0.1:7890")
     monkeypatch.setenv("CCS_PLUS_APPS__CODEX__USER_HOME", "custom/user-codex")

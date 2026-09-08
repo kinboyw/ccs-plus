@@ -17,10 +17,16 @@ SETTINGS_FILE = "settings.yaml"
 
 
 def _runtime_root() -> Path:
-    """Return the persistent directory for configuration and application state."""
+    """Return the directory that owns ``settings.yaml`` and ``.env``.
+
+    Frozen binaries use the executable directory. Source checkouts use the
+    repository root. Installed wheels fall back to the current working directory.
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return PROJECT_ROOT
+    if (PROJECT_ROOT / SETTINGS_FILE).is_file():
+        return PROJECT_ROOT
+    return Path.cwd()
 
 
 def _bundled_settings_path() -> Path:
