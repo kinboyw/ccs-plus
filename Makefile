@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help deps install check test release binary
+.PHONY: help deps install check test release pypi binary
 
 UV ?= uv
 UV_RUN ?= $(UV) run --locked --no-sync
@@ -36,6 +36,7 @@ help: ## Show the public workflow.
 	@printf "make check [fix=1]        Check format, lint, and types\n"
 	@printf "make test [cov=1]         Run tests, optionally with coverage\n"
 	@printf "make release              Build source and wheel distributions\n"
+	@printf "make pypi                 Upload the pyproject.toml version's dist artifacts to PyPI\n"
 	@printf "make binary               Build a local one-file binary with PyInstaller\n"
 
 deps:
@@ -54,6 +55,18 @@ check:
 
 release:
 	$(UV) build
+
+# version-calc.py writes [project].version; uv version reads that same field.
+VERSION = $(shell $(UV) version --short)
+DIST_STEM = ccs_plus
+
+pypi:
+	$(if $(VERSION),,$(error could not read [project].version from pyproject.toml))
+	$(if $(wildcard dist/$(DIST_STEM)-$(VERSION).tar.gz),,$(error Missing dist/$(DIST_STEM)-$(VERSION).tar.gz))
+	$(if $(wildcard dist/$(DIST_STEM)-$(VERSION)-py3-none-any.whl),,$(error Missing dist/$(DIST_STEM)-$(VERSION)-py3-none-any.whl))
+	$(UV) tool run --env-file .env twine upload --non-interactive \
+		"dist/$(DIST_STEM)-$(VERSION).tar.gz" \
+		"dist/$(DIST_STEM)-$(VERSION)-py3-none-any.whl"
 
 binary:
 	$(UV_RUN) pyinstaller \

@@ -58,7 +58,7 @@ jobs:
         run: uv lock --check
 
       - name: Install locked dependencies
-        run: uv sync --all-groups --locked
+        run: make deps
 
       - name: Build wheel
         run: uv build --wheel
@@ -152,3 +152,4 @@ jobs:
           else
             gh release create "$RELEASE_TAG" dist/*.whl \
               --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi

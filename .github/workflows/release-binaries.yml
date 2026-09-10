@@ -4,6 +4,9 @@
 #   - successful Release wheel run for a version tag
 #   - workflow_dispatch (manual rebuild for a tag)
 #
+# PyInstaller flags live in Makefile `binary`. This workflow runs that target on
+# each native runner, then attaches platform-named assets.
+#
 # Artifacts are uploaded onto the release as:
 #   ccs-plus-linux-x86_64
 #   ccs-plus-macos-arm64
@@ -51,6 +54,9 @@ jobs:
           - os: macos-14
             artifact: ccs-plus-macos-arm64
             ext: ""
+          - os: macos-15-intel
+            artifact: ccs-plus-macos-x86_64
+            ext: ""
           - os: windows-2022
             artifact: ccs-plus-windows-x86_64
             ext: ".exe"
@@ -82,38 +88,25 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install GNU Make
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install make --yes --no-progress
+
       - name: Sync project
-        run: uv sync --all-groups --locked
+        shell: bash
+        run: make deps
 
       - name: Build binary
         shell: bash
+        run: make binary
+
+      - name: Stage binary
+        shell: bash
         run: |
           set -euo pipefail
-          ENTRY="src/ccs_plus/__main__.py"
-          NAME="ccs-plus"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            data_separator=";"
-          else
-            data_separator=":"
-          fi
-          uv run --locked --no-sync pyinstaller \
-            --noconfirm \
-            --clean \
-            --onefile \
-            --name "${NAME}" \
-            --paths src \
-            --add-data "settings.yaml${data_separator}." \
-            --hidden-import ccs_plus \
-            --hidden-import ccs_plus.cli \
-            --hidden-import ccs_plus.tui \
-            --hidden-import ccs_plus.sessions \
-            --collect-all prompt_toolkit \
-            --collect-all dynaconf \
-            --collect-submodules ccs_plus \
-            "${ENTRY}"
-
           mkdir -p dist/release
-          src="dist/${NAME}${{ matrix.ext }}"
+          src="dist/ccs-plus${{ matrix.ext }}"
           dst="dist/release/${{ matrix.artifact }}${{ matrix.ext }}"
           if [[ ! -f "${src}" ]]; then
             echo "Expected binary missing: ${src}" >&2
@@ -149,6 +142,7 @@ jobs:
       contents: write
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Download all binaries
@@ -172,5 +166,6 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             artifacts/ccs-plus-linux-x86_64 \
             artifacts/ccs-plus-macos-arm64 \
+            artifacts/ccs-plus-macos-x86_64 \
             artifacts/ccs-plus-windows-x86_64.exe \
             --repo "$GITHUB_REPOSITORY" --clobber
