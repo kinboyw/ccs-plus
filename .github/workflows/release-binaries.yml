@@ -10,7 +10,6 @@
 # Artifacts are uploaded onto the release as:
 #   ccs-plus-linux-x86_64
 #   ccs-plus-macos-arm64
-#   ccs-plus-macos-x86_64
 #   ccs-plus-windows-x86_64.exe
 
 name: Release binaries
