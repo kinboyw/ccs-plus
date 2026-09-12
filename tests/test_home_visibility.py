@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
+import ccs_plus.home_visibility as home_visibility
 from ccs_plus.domain import (
     AppKind,
     ClaudeRuntime,
@@ -224,6 +225,33 @@ def test_link_user_entries_links_files(tmp_path: Path) -> None:
     assert linked.read_text(encoding="utf-8") == '{"ok": true}\n'
     # hardlink or symlink both acceptable
     assert linked.stat().st_nlink >= 1 or linked.is_symlink()
+
+
+def test_link_user_entries_copies_file_when_links_are_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    source = tmp_path / "user" / "hooks"
+    target = tmp_path / "state" / "hooks"
+    source.mkdir(parents=True)
+    payload = source / "orca-status.json.bak"
+    payload.write_text('{"hooks": {}}\n', encoding="utf-8")
+
+    def fail_hardlink(source_path: Path, target_path: Path) -> None:
+        raise OSError("cross-device link")
+
+    def fail_symlink(self: Path, target_path: Path, target_is_directory: bool = False) -> None:
+        raise PermissionError("symbolic link privilege is unavailable")
+
+    monkeypatch.setattr(home_visibility.os, "link", fail_hardlink)
+    monkeypatch.setattr(Path, "symlink_to", fail_symlink)
+
+    with caplog.at_level(logging.WARNING, logger="ccs_plus.home_visibility"):
+        link_user_entries(source, target)
+
+    copied = target / payload.name
+    assert copied.read_text(encoding="utf-8") == '{"hooks": {}}\n'
+    assert not _is_link(copied)
+    assert "Failed to link file" not in caplog.text
 
 
 def test_link_user_entries_missing_source_is_noop(tmp_path: Path) -> None:

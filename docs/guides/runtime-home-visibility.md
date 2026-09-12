@@ -46,7 +46,7 @@ Codex 的用户配置只能有一个用户层根。若子进程使用隔离 runt
 2. source 与 target 是同一路径时不操作，避免自引用。
 3. target 根是文件或错误链接时，先移除后创建隔离容器；根目录本身仍由 state Home 管理，以容纳该 app 的隔离 `skip` 条目。
 4. source 子条目与 target 同名时，正确指向 source 的链接保持不变；其他 target 文件、目录和链接均先移除，再创建链接或复制。
-5. `copy_names` 中的普通文件每次覆盖复制；其他文件优先硬链接，无法硬链接时创建符号链接。
+5. `copy_names` 中的普通文件每次覆盖复制；其他文件优先硬链接，无法硬链接时创建符号链接，仍不可用时覆盖复制。
 6. `skip_names` 是 state-owned 例外：source 中同名条目不会触碰 target。
 
 Windows 原生插件缓存可包含只读 Git object。删除 state target 时必须递归清除只读属性并重试，不能因 `WinError 5` 保留陈旧 cache。每个 target projection 使用 state 侧锁，避免多个 `ccsp launch` 并发删除和重建同一目录。若仍因文件锁而失败，启动器会记录链接或复制失败，且不会改写用户 Home；关闭占用该 state Home 的 CLI 进程后重新执行相同的 `ccsp launch`，让同步重新建立权威投影。

@@ -1,5 +1,9 @@
 # ccs-plus
 
+[![CI](https://github.com/leoninew/ccs-plus/actions/workflows/ci.yml/badge.svg)](https://github.com/leoninew/ccs-plus/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ccs-plus)](https://pypi.org/project/ccs-plus/)
+[![GitHub Release](https://img.shields.io/github/v/release/leoninew/ccs-plus)](https://github.com/leoninew/ccs-plus/releases)
+
 <p align="center">
   <strong>cc-switch provider manager · multi-agent CLI launcher · fullscreen TUI</strong><br/>
   <sub>Claude · Codex · Grok · OpenCode — one command, one pane, zero context switching</sub>

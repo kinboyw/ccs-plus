@@ -278,8 +278,9 @@ def link_user_entries(
     Directories are junctioned/symlinked so both sides share one tree. File
     names listed in *copy_names* are copied from source on every call, replacing
     any stale target copy — index/state files whose contents point back at the
-    real home need no link. Other files are hardlinked then symlinked. Names in
-    *skip_names* are never touched on the target side.
+    real home need no link. Other files are hardlinked, then symlinked, then
+    copied when linking is unavailable. Names in *skip_names* are never touched
+    on the target side.
 
     Never links *source_dir* itself as a single unit. Source entries are
     authoritative: any conflicting target file, directory, or incorrect link
@@ -454,7 +455,8 @@ def _link_file(source: Path, target: Path) -> None:
     try:
         target.symlink_to(source)
     except OSError as exc:
-        logger.warning("Failed to link file %s -> %s: %s", target, source, exc)
+        logger.debug("Falling back to a copied file for %s -> %s: %s", target, source, exc)
+        _copy_file(source, target)
 
 
 def _copy_file(source: Path, target: Path) -> None:
