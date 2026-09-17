@@ -14,6 +14,8 @@ def test_settings_default_homes_use_local_data(settings_root) -> None:
     assert settings.claude.home == settings_root / "data" / "claude"
     assert settings.claude.permission_mode == "bypassPermissions"
     assert settings.codex.session_model_provider == "ccs-plus-managed"
+    assert settings.gemini.home == settings_root / "data" / "gemini"
+    assert settings.gemini.approval_mode == "default"
     assert settings.grok.sandbox_mode == "workspace"
     assert settings.grok.always_approve is True
     assert settings.grok.home == settings_root / "data" / "grok"
@@ -22,6 +24,7 @@ def test_settings_default_homes_use_local_data(settings_root) -> None:
     assert settings.opencode.always_approve is False
     assert settings.runtime_home("codex") == settings.codex.user_home
     assert settings.runtime_home("claude") == settings.claude.home
+    assert settings.runtime_home("gemini") == settings.gemini.home
     assert settings.state_home("opencode") == settings.opencode.home
     # user_home is not in settings.yaml; defaults to Path.home() / ".claude"|".codex"
     assert settings.claude.user_home == Path.home() / ".claude"

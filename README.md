@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>cc-switch provider manager · multi-agent CLI launcher · fullscreen TUI</strong><br/>
-  <sub>Claude · Codex · Grok · OpenCode — one command, one pane, zero context switching</sub>
+  <sub>Claude · Codex · Gemini · Grok · OpenCode — one command, one pane, zero context switching</sub>
 </p>
 
 <p align="center">
@@ -19,11 +19,11 @@
 
 ---
 
-`ccs-plus` 管理 [cc-switch](https://github.com/farion1231/cc-switch) SQLite 中的 Claude、Codex、Grok、OpenCode provider，并用选定 provider 启动对应原生 CLI。只做 provider 管理、运行配置和启动，不实现 GUI、本地代理或请求转换。
+`ccs-plus` 管理 [cc-switch](https://github.com/farion1231/cc-switch) SQLite 中的 Claude、Codex、Gemini、Grok、OpenCode provider，并用选定 provider 启动对应原生 CLI。只做 provider 管理、运行配置和启动，不实现 GUI、本地代理或请求转换。
 
 ## 安装
 
-从 [GitHub Release](https://github.com/leoninew/ccs-plus/releases) 下载二进制（推荐）或 `.whl`。开发安装用 `make deps && make install`。本机还需要已安装的 CLI（`claude` / `codex` / `grok` / `opencode`）和可访问的 cc-switch 数据库。`ccs-plus` 与 `ccsp` 是同一入口。
+从 [GitHub Release](https://github.com/leoninew/ccs-plus/releases) 下载二进制（推荐）或 `.whl`。开发安装用 `make deps && make install`。本机还需要已安装的 CLI（`claude` / `codex` / `gemini` / `grok` / `opencode`）和可访问的 cc-switch 数据库。`ccs-plus` 与 `ccsp` 是同一入口。
 
 ```bash
 uv tool install ./ccs_plus-x.y.z-py3-none-any.whl   # wheel，需 Python 3.12+
@@ -60,12 +60,13 @@ cp .env.example .env                                 # 填入 Fernet key
 ```bash
 ccsp
 ccsp run x2
+ccsp run m1
 ccsp run o1
 ccsp launch codex --provider "<provider-name>"
 ccsp launch opencode --provider "<provider-name>" --cwd "<directory>"
 ```
 
-`run` 使用 `provider list` 里的编号（`c1` / `x2` / `g1` / `o1`）。`launch --cwd` 指定工作目录；`--model` 和 `--effort` 只覆盖本次启动。
+`run` 使用 `provider list` 里的编号（`c1` / `x2` / `m1` / `g1` / `o1`）。`launch --cwd` 指定工作目录；`--model` 和 `--effort` 只覆盖本次启动。
 
 ### 管理 provider
 
@@ -88,7 +89,7 @@ ccsp provider reset
 ccsp provider delete claude "<provider-name>" --yes
 ```
 
-`export` / `import` / `reset` 省略 app 时覆盖 Claude、Codex、Grok、OpenCode；后面跟 app 名则只处理一个。未指定路径时，备份写到 `data/providers-all-<timestamp>.json`。恢复必须使用生成备份时的同一个 `encryption_key`。`reset` 默认只预览，加 `--yes` 才删除非官方 provider。
+`export` / `import` / `reset` 省略 app 时覆盖 Claude、Codex、Gemini、Grok、OpenCode；后面跟 app 名则只处理一个。未指定路径时，备份写到 `data/providers-all-<timestamp>.json`。恢复必须使用生成备份时的同一个 `encryption_key`。`reset` 默认只预览，加 `--yes` 才删除非官方 provider。
 
 ## 开发
 

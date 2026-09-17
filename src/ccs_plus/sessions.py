@@ -66,10 +66,17 @@ class OpenCodeSessionReader(SessionReader):
         return _list_opencode_db(home, app)
 
 
+class GeminiSessionReader(SessionReader):
+    def list(self, home: Path, app: AppKind) -> list[Session]:
+        del home, app
+        return []
+
+
 def session_reader_for(app: AppKind) -> SessionReader:
     readers: dict[AppKind, SessionReader] = {
         AppKind.CODEX: CodexSessionReader(),
         AppKind.CLAUDE: ClaudeSessionReader(),
+        AppKind.GEMINI: GeminiSessionReader(),
         AppKind.GROK: GrokSessionReader(),
         AppKind.OPENCODE: OpenCodeSessionReader(),
     }

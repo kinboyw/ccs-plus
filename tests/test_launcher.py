@@ -78,6 +78,7 @@ def test_launch_specs_set_global_proxy_and_clear_inherited_values(
     [
         (AppKind.CLAUDE, ("--permission-mode", "bypassPermissions")),
         (AppKind.CODEX, ("--profile",)),
+        (AppKind.GEMINI, ("--approval-mode", "default")),
         (AppKind.GROK, ("--sandbox", "workspace", "--always-approve")),
         (AppKind.OPENCODE, ()),
     ],
@@ -89,6 +90,7 @@ def test_launch_specs_keep_secret_out_of_argv_and_use_expected_home(
     monkeypatch.setenv("CODEX_HOME", "temporary-codex-home")
     monkeypatch.setenv("CODEX_SQLITE_HOME", "temporary-sqlite-home")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "temporary-claude-home")
+    monkeypatch.setenv("GEMINI_CLI_HOME", "temporary-gemini-home")
     monkeypatch.setenv("GROK_HOME", "temporary-grok-home")
 
     settings = _settings(tmp_path)
@@ -110,6 +112,7 @@ def test_launch_specs_keep_secret_out_of_argv_and_use_expected_home(
     state_keys = {
         AppKind.CLAUDE: "CLAUDE_CONFIG_DIR",
         AppKind.CODEX: "CODEX_HOME",
+        AppKind.GEMINI: "GEMINI_CLI_HOME",
         AppKind.GROK: "GROK_HOME",
     }
     state_key = state_keys[app]
@@ -136,6 +139,10 @@ def test_launch_specs_keep_secret_out_of_argv_and_use_expected_home(
         assert "CODEX_SQLITE_HOME" not in spec.env
         assert "--sandbox" not in spec.argv
         assert "--dangerously-bypass-approvals-and-sandbox" not in spec.argv
+    if app is AppKind.GEMINI:
+        assert spec.argv[spec.argv.index("--model") + 1] == "example-model"
+        assert spec.env["GOOGLE_GEMINI_BASE_URL"] == "https://api.example.test/v1"
+        assert spec.env["GEMINI_API_KEY"] == "launch-secret-key"
 
 
 def test_codex_launch_uses_provider_profile_for_approval_policy(tmp_path, monkeypatch) -> None:

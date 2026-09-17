@@ -14,6 +14,7 @@ from ccs_plus.domain import (
     ClaudeRuntime,
     CodexAppConfig,
     CodexRuntime,
+    GeminiRuntime,
     GrokRuntime,
     NewProvider,
     OpenCodeRuntime,
@@ -46,6 +47,20 @@ class ClaudeProviderAdapter(ProviderAdapter):
 
     def display(self, provider: Provider) -> ProviderDisplay:
         return _environment_display(provider)
+
+
+class GeminiProviderAdapter(ProviderAdapter):
+    def new_settings(self, value: NewProvider, codex: CodexAppConfig) -> dict[str, Any]:
+        del codex
+        return _gemini_environment_settings(value)
+
+    def runtime(self, provider: Provider) -> RuntimeConfig:
+        if provider.is_official:
+            return GeminiRuntime(provider, None, None, None, None)
+        return _gemini_environment_runtime(provider)
+
+    def display(self, provider: Provider) -> ProviderDisplay:
+        return _gemini_environment_display(provider)
 
 
 class CodexProviderAdapter(ProviderAdapter):
@@ -91,6 +106,7 @@ def provider_adapter_for(app: AppKind) -> ProviderAdapter:
     adapters: dict[AppKind, ProviderAdapter] = {
         AppKind.CLAUDE: ClaudeProviderAdapter(),
         AppKind.CODEX: CodexProviderAdapter(),
+        AppKind.GEMINI: GeminiProviderAdapter(),
         AppKind.GROK: GrokProviderAdapter(),
         AppKind.OPENCODE: OpenCodeProviderAdapter(),
     }
@@ -220,6 +236,49 @@ def _environment_display(provider: Provider) -> ProviderDisplay:
         model=_as_string(env.get("ANTHROPIC_MODEL"))
         or _as_string(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")),
         effort=_as_string(provider.settings_config.get("effortLevel")),
+    )
+
+
+def _gemini_environment_settings(value: NewProvider) -> dict[str, Any]:
+    return {
+        "env": {
+            "GOOGLE_GEMINI_BASE_URL": value.endpoint.strip(),
+            "GEMINI_API_KEY": value.api_key,
+            "GEMINI_MODEL": value.model.strip(),
+        },
+        "config": {},
+    }
+
+
+def _gemini_environment_runtime(provider: Provider) -> GeminiRuntime:
+    env = _mapping(provider.settings_config.get("env"), "Gemini env")
+    values: dict[str, str] = {}
+    for key, value in env.items():
+        normalized_value = _as_string(value)
+        if normalized_value:
+            values[key] = normalized_value
+    endpoint = values.get("GOOGLE_GEMINI_BASE_URL")
+    api_key = values.get("GEMINI_API_KEY")
+    model = values.get("GEMINI_MODEL")
+    _require(endpoint, "Gemini GOOGLE_GEMINI_BASE_URL")
+    _require(api_key, "Gemini API key")
+    return GeminiRuntime(
+        provider=provider,
+        endpoint=endpoint,
+        api_key=api_key,
+        model=model,
+        effort=None,
+        gemini_env=values,
+        approval_mode=_as_string(provider.settings_config.get("approval_mode")),
+    )
+
+
+def _gemini_environment_display(provider: Provider) -> ProviderDisplay:
+    env = _mapping(provider.settings_config.get("env"), "Gemini env")
+    return ProviderDisplay(
+        endpoint=_as_string(env.get("GOOGLE_GEMINI_BASE_URL")),
+        model=_as_string(env.get("GEMINI_MODEL")),
+        effort=None,
     )
 
 

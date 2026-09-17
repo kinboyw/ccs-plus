@@ -9,6 +9,7 @@ from ccs_plus.domain import (
     ClaudeRuntime,
     CodexAppConfig,
     CodexRuntime,
+    GeminiRuntime,
     GrokRuntime,
     NewProvider,
     OpenCodeRuntime,
@@ -38,11 +39,25 @@ def test_build_claude_provider_keeps_effort_in_cc_switch_shape() -> None:
     assert runtime_from_provider(provider).effort == "high"
 
 
+def test_build_gemini_provider_keeps_cc_switch_native_shape() -> None:
+    provider = build_provider(_new_value(AppKind.GEMINI), _CODEX)
+
+    assert provider.settings_config == {
+        "env": {
+            "GOOGLE_GEMINI_BASE_URL": "https://api.example.test/v1",
+            "GEMINI_API_KEY": "test-secret-key",
+            "GEMINI_MODEL": "example-model",
+        },
+        "config": {},
+    }
+
+
 @pytest.mark.parametrize(
     ("app", "runtime_type"),
     [
         (AppKind.CLAUDE, ClaudeRuntime),
         (AppKind.CODEX, CodexRuntime),
+        (AppKind.GEMINI, GeminiRuntime),
         (AppKind.GROK, GrokRuntime),
         (AppKind.OPENCODE, OpenCodeRuntime),
     ],

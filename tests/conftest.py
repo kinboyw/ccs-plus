@@ -13,6 +13,7 @@ from ccs_plus.settings import (
     ClaudeVisibilitySettings,
     CodexSettings,
     EntryVisibilitySettings,
+    GeminiSettings,
     GrokSettings,
     GrokVisibilitySettings,
     OpenCodeSettings,
@@ -94,6 +95,7 @@ def make_app_settings(
     opencode_always_approve: bool = False,
     claude_user_home: Path | None = None,
     codex_user_home: Path | None = None,
+    gemini_approval_mode: str = "default",
     grok_user_home: Path | None = None,
     opencode_user_home: Path | None = None,
     opencode_user_data_home: Path | None = None,
@@ -118,6 +120,10 @@ def make_app_settings(
             session_model_provider=session_model_provider,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
+        ),
+        gemini=GeminiSettings(
+            home=root / "gemini",
+            approval_mode=gemini_approval_mode,
         ),
         grok=GrokSettings(
             home=root / "grok",

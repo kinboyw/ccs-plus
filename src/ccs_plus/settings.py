@@ -84,6 +84,12 @@ class CodexSettings:
 
 
 @dataclass(frozen=True)
+class GeminiSettings:
+    home: Path
+    approval_mode: str
+
+
+@dataclass(frozen=True)
 class ClaudeVisibilitySettings:
     mcp_key: str
     skills: EntryVisibilitySettings
@@ -116,12 +122,14 @@ class AppSettings:
     proxy: str
     claude: ClaudeSettings
     codex: CodexSettings
+    gemini: GeminiSettings
     grok: GrokSettings
     opencode: OpenCodeSettings
 
     def state_home(self, app: str) -> Path:
         values = {
             "claude": self.claude.home,
+            "gemini": self.gemini.home,
             "grok": self.grok.home,
             "opencode": self.opencode.home,
         }
@@ -299,6 +307,17 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
             sandbox_mode=_resolve_non_empty_string(
                 _get(config, "apps.codex.sandbox_mode"),
                 "apps.codex.sandbox_mode",
+            ),
+        ),
+        gemini=GeminiSettings(
+            home=_resolve_path(
+                root,
+                _get_or_default(config, "apps.gemini.home", "data/gemini"),
+                "apps.gemini.home",
+            ),
+            approval_mode=_resolve_non_empty_string(
+                _get_or_default(config, "apps.gemini.approval_mode", "default"),
+                "apps.gemini.approval_mode",
             ),
         ),
         grok=GrokSettings(

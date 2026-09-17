@@ -16,6 +16,7 @@ class ProviderError(Exception):
 class AppKind(StrEnum):
     CLAUDE = "claude"
     CODEX = "codex"
+    GEMINI = "gemini"
     GROK = "grok"
     OPENCODE = "opencode"
 
@@ -41,6 +42,7 @@ class AppKind(StrEnum):
         return {
             AppKind.CLAUDE: "Claude",
             AppKind.CODEX: "Codex",
+            AppKind.GEMINI: "Gemini",
             AppKind.GROK: "Grok",
             AppKind.OPENCODE: "OpenCode",
         }[self]
@@ -51,6 +53,7 @@ class AppKind(StrEnum):
         return {
             AppKind.CLAUDE: "Cl",
             AppKind.CODEX: "Cx",
+            AppKind.GEMINI: "Gm",
             AppKind.GROK: "Gk",
             AppKind.OPENCODE: "Oc",
         }[self]
@@ -172,6 +175,33 @@ class ClaudeRuntime(RuntimeProvider):
 
 
 @dataclass(frozen=True)
+class GeminiRuntime(RuntimeProvider):
+    """Gemini CLI environment and approval settings."""
+
+    gemini_env: dict[str, str] = field(default_factory=dict)
+    approval_mode: str | None = None
+
+    def with_permission_defaults(self, settings: AppSettings) -> Self:
+        return replace(
+            self,
+            approval_mode=self.approval_mode or settings.gemini.approval_mode,
+        )
+
+    def with_permission_override(
+        self,
+        approval_policy: str | None = None,
+        sandbox_mode: str | None = None,
+        *,
+        permission_mode: str | None = None,
+        always_approve: bool | None = None,
+    ) -> Self:
+        del approval_policy, sandbox_mode, always_approve
+        if permission_mode is None:
+            return self
+        return replace(self, approval_mode=permission_mode)
+
+
+@dataclass(frozen=True)
 class CodexRuntime(RuntimeProvider):
     """Codex-specific permission settings."""
 
@@ -273,7 +303,7 @@ class OpenCodeRuntime(RuntimeProvider):
         )
 
 
-RuntimeConfig = ClaudeRuntime | CodexRuntime | GrokRuntime | OpenCodeRuntime
+RuntimeConfig = ClaudeRuntime | CodexRuntime | GeminiRuntime | GrokRuntime | OpenCodeRuntime
 
 
 @dataclass(frozen=True)

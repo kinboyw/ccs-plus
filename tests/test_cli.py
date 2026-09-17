@@ -169,12 +169,37 @@ def test_run_selects_provider_by_list_number(monkeypatch, tmp_path) -> None:
     assert built == [(second, settings, None, None, None)]
 
 
+def test_run_selects_gemini_provider_by_list_number(monkeypatch, tmp_path) -> None:
+    provider = _provider(AppKind.GEMINI, "Gemini")
+    settings = _settings(tmp_path)
+
+    class Repository:
+        def __init__(self, database_path):
+            assert database_path == settings.database_path
+
+        def list(self, apps):
+            assert apps == [AppKind.GEMINI]
+            return [provider]
+
+    monkeypatch.setattr("ccs_plus.cli._settings", lambda: settings)
+    monkeypatch.setattr("ccs_plus.cli.ProviderRepository", Repository)
+    monkeypatch.setattr(
+        "ccs_plus.cli.build_launch_spec",
+        lambda *args: LaunchSpec(argv=("native-gemini",), cwd=tmp_path, env={}),
+    )
+    monkeypatch.setattr("ccs_plus.cli.launch", lambda spec: 0)
+
+    result = CliRunner().invoke(main, ["run", "m1"])
+
+    assert result.exit_code == 0
+
+
 @pytest.mark.parametrize("target", ("codex1", "c0", "x", "z1"))
 def test_run_rejects_invalid_target(target: str) -> None:
     result = CliRunner().invoke(main, ["run", target])
 
     assert result.exit_code != 0
-    assert "Run target must be c, x, g, or o" in result.output
+    assert "Run target must be c, x, m, g, or o" in result.output
 
 
 def test_run_rejects_unknown_list_number(monkeypatch, tmp_path) -> None:
@@ -886,6 +911,24 @@ def test_provider_show_secret_includes_api_key(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["provider", "show", provider.name, "--show-secret"])
 
     assert result.exit_code == 0
+    assert '--api-key "cli-secret-key"' in result.output
+
+
+def test_provider_show_includes_gemini_matches(monkeypatch) -> None:
+    codex = _provider(AppKind.CODEX, "Shared")
+    gemini = _provider(AppKind.GEMINI, "Shared")
+
+    class Repository:
+        def find_by_name(self, name):
+            assert name == "Shared"
+            return [codex, gemini]
+
+    monkeypatch.setattr("ccs_plus.cli._repository", lambda: Repository())
+    result = CliRunner().invoke(main, ["provider", "show", "Shared", "--show-secret"])
+
+    assert result.exit_code == 0
+    assert 'ccsp provider delete gemini "Shared" --yes' in result.output
+    assert 'ccsp provider add gemini --name "Shared"' in result.output
     assert '--api-key "cli-secret-key"' in result.output
 
 

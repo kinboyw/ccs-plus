@@ -46,6 +46,9 @@ apps:
     session_model_provider: ccs-plus-managed
     approval_policy: never
     sandbox_mode: danger-full-access
+  gemini:
+    home: data/gemini
+    approval_mode: default
   grok:
     home: data/grok
     sandbox_mode: workspace

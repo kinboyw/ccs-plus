@@ -11,6 +11,7 @@ from ccs_plus.adapters import runtime_from_provider
 from ccs_plus.domain import (
     ClaudeRuntime,
     CodexRuntime,
+    GeminiRuntime,
     GrokRuntime,
     OpenCodeRuntime,
     Provider,
@@ -94,6 +95,31 @@ class ClaudeLauncher(RuntimeLauncher):
         if self.effort:
             argv.extend(["--effort", self.effort])
         argv.extend(["--permission-mode", self.permission_mode])
+        return argv
+
+
+@dataclass(frozen=True)
+class GeminiLauncher(RuntimeLauncher):
+    runtime: GeminiRuntime
+    approval_mode: str
+
+    def build(self) -> list[str]:
+        _clear(
+            self.env,
+            "GEMINI_CLI_HOME",
+            "GOOGLE_GEMINI_BASE_URL",
+            "GEMINI_API_KEY",
+            "GEMINI_MODEL",
+        )
+        self.env["GEMINI_CLI_HOME"] = str(self.runtime_home)
+        if not self.runtime.provider.is_official:
+            self.env.update(self.runtime.gemini_env)
+        argv = [self.executable]
+        if self.session_id:
+            argv.extend(["--resume", self.session_id])
+        if self.model:
+            argv.extend(["--model", self.model])
+        argv.extend(["--approval-mode", self.approval_mode])
         return argv
 
 
@@ -306,7 +332,7 @@ def build_launch_spec(
     env = environment_with_defaults()
     _apply_proxy(env, settings.proxy)
     runtime_home = settings.runtime_home(provider.app.value)
-    if not isinstance(runtime, CodexRuntime):
+    if not isinstance(runtime, (CodexRuntime, GeminiRuntime)):
         visibility = home_visibility_for(
             runtime,
             settings,
@@ -368,6 +394,17 @@ def runtime_launcher_for(
             session_model_provider=settings.codex.session_model_provider,
             approval_policy=_required(runtime.approval_policy, "Codex approval_policy"),
             sandbox_mode=_required(runtime.sandbox_mode, "Codex sandbox_mode"),
+        )
+    if isinstance(runtime, GeminiRuntime):
+        return GeminiLauncher(
+            executable=executable,
+            env=env,
+            runtime_home=runtime_home,
+            model=model,
+            effort=effort,
+            session_id=session_id,
+            runtime=runtime,
+            approval_mode=_required(runtime.approval_mode, "Gemini approval_mode"),
         )
     if isinstance(runtime, GrokRuntime):
         return GrokLauncher(

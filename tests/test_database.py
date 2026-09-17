@@ -171,6 +171,25 @@ def test_find_by_name_returns_matches_from_multiple_apps(database_path) -> None:
     assert [provider.app for provider in found] == [AppKind.CLAUDE, AppKind.CODEX]
 
 
+def test_find_by_name_returns_gemini_matches(database_path) -> None:
+    repository = ProviderRepository(database_path)
+    codex = _new_provider(AppKind.CODEX)
+    repository.add(codex)
+    with sqlite3.connect(database_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO providers (id, app_type, name, settings_config, category, meta, is_current,
+                                   in_failover_queue, cost_multiplier)
+            VALUES (?, 'gemini', ?, '{}', 'custom', '{}', 0, 0, '1.0')
+            """,
+            ("gemini-provider-id", codex.name),
+        )
+
+    found = repository.find_by_name(codex.name)
+
+    assert [provider.app for provider in found] == [AppKind.CODEX, AppKind.GEMINI]
+
+
 def test_get_by_name_is_scoped_to_app_type(database_path) -> None:
     repository = ProviderRepository(database_path)
     claude = _new_provider(AppKind.CLAUDE)

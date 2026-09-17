@@ -37,6 +37,7 @@ from ccs_plus.domain import (
     AppKind,
     ClaudeRuntime,
     CodexRuntime,
+    GeminiRuntime,
     GrokRuntime,
     OpenCodeRuntime,
     Provider,
@@ -72,10 +73,12 @@ STYLE = Style.from_dict(
         "item.muted": "#8b949e",
         "badge.claude": "bg:#d97706 #0a0e14 bold",
         "badge.codex": "bg:#10b981 #0a0e14 bold",
+        "badge.gemini": "bg:#eab308 #0a0e14 bold",
         "badge.grok": "bg:#a855f7 #0a0e14 bold",
         "badge.opencode": "bg:#38bdf8 #0a0e14 bold",
         "badge.claude.focused": "bg:#fbbf24 #0a0e14 bold",
         "badge.codex.focused": "bg:#34d399 #0a0e14 bold",
+        "badge.gemini.focused": "bg:#fde047 #0a0e14 bold",
         "badge.grok.focused": "bg:#c084fc #0a0e14 bold",
         "badge.opencode.focused": "bg:#7dd3fc #0a0e14 bold",
         "status.ok": "#3fb950 bold",
@@ -184,6 +187,32 @@ PERMISSION_PRESETS: dict[AppKind, tuple[PermissionPreset, ...]] = {
             "only trusted commands · read-only",
             approval_policy="untrusted",
             sandbox_mode="read-only",
+        ),
+    ),
+    AppKind.GEMINI: (
+        PermissionPreset(
+            "default",
+            "Default",
+            "confirm actions when needed",
+            permission_mode="default",
+        ),
+        PermissionPreset(
+            "auto-edit",
+            "Auto edit",
+            "auto-approve edit tools",
+            permission_mode="auto_edit",
+        ),
+        PermissionPreset(
+            "yolo",
+            "YOLO",
+            "auto-approve all tools",
+            permission_mode="yolo",
+        ),
+        PermissionPreset(
+            "plan",
+            "Plan",
+            "read-only mode",
+            permission_mode="plan",
         ),
     ),
     AppKind.GROK: (
@@ -480,7 +509,10 @@ class _LaunchScreen:
         presets = self._permission_presets()
         mode, approval, sandbox, always = self._effective_permission_values()
         for index, preset in enumerate(presets):
-            if self.current_app is AppKind.CLAUDE and preset.permission_mode == mode:
+            if (
+                self.current_app in {AppKind.CLAUDE, AppKind.GEMINI}
+                and preset.permission_mode == mode
+            ):
                 return index
             if (
                 self.current_app is AppKind.CODEX
@@ -511,6 +543,8 @@ class _LaunchScreen:
         if provider is None:
             if app is AppKind.CLAUDE:
                 return self.settings.claude.permission_mode, None, None, None
+            if app is AppKind.GEMINI:
+                return self.settings.gemini.approval_mode, None, None, None
             if app is AppKind.CODEX:
                 return (
                     None,
@@ -531,6 +565,8 @@ class _LaunchScreen:
         except ProviderError:
             if app is AppKind.CLAUDE:
                 return self.settings.claude.permission_mode, None, None, None
+            if app is AppKind.GEMINI:
+                return self.settings.gemini.approval_mode, None, None, None
             if app is AppKind.CODEX:
                 return (
                     None,
@@ -548,6 +584,8 @@ class _LaunchScreen:
             return None, None, self.settings.grok.sandbox_mode, self.settings.grok.always_approve
         if isinstance(runtime, ClaudeRuntime):
             return runtime.permission_mode, None, None, None
+        if isinstance(runtime, GeminiRuntime):
+            return runtime.approval_mode, None, None, None
         if isinstance(runtime, CodexRuntime):
             return None, runtime.approval_policy, runtime.sandbox_mode, None
         if isinstance(runtime, GrokRuntime):

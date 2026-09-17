@@ -28,11 +28,12 @@ HELP_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 RUN_APP_PREFIXES = {
     "c": AppKind.CLAUDE,
     "x": AppKind.CODEX,
+    "m": AppKind.GEMINI,
     "g": AppKind.GROK,
     "o": AppKind.OPENCODE,
 }
 RUN_PREFIXES = {app: prefix for prefix, app in RUN_APP_PREFIXES.items()}
-RUN_SELECTOR = re.compile(r"(?P<app>[cxgo])(?P<number>[1-9][0-9]*)", re.IGNORECASE)
+RUN_SELECTOR = re.compile(r"(?P<app>[cxmgo])(?P<number>[1-9][0-9]*)", re.IGNORECASE)
 APP_NAMES = frozenset(app.value for app in AppKind)
 
 
@@ -299,7 +300,7 @@ def launch_provider(
     effort_override: str | None,
     verbose: bool,
 ) -> None:
-    """Launch Claude, Codex, Grok, or OpenCode using one cc-switch provider."""
+    """Launch Claude, Codex, Gemini, Grok, or OpenCode using one cc-switch provider."""
     try:
         if verbose:
             _configure_verbose_logging()
@@ -323,7 +324,7 @@ def launch_provider(
 @click.argument("target")
 @click.option("-v", "--verbose", is_flag=True, help="Log launch details to standard error.")
 def run_provider(target: str, verbose: bool) -> None:
-    """Launch a provider listed as c1, x1, g1, or o1."""
+    """Launch a provider listed as c1, x1, m1, g1, or o1."""
     try:
         if verbose:
             _configure_verbose_logging()
@@ -471,7 +472,7 @@ def _parse_run_target(value: str) -> tuple[AppKind, int]:
     match = RUN_SELECTOR.fullmatch(value.strip())
     if match is None:
         raise ProviderError(
-            "Run target must be c, x, g, or o followed by a positive provider number "
+            "Run target must be c, x, m, g, or o followed by a positive provider number "
             "(for example: x1)."
         )
     return RUN_APP_PREFIXES[match["app"].lower()], int(match["number"])
