@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,13 +27,17 @@ from prompt_toolkit.layout import (
     Window,
     WindowAlign,
 )
-from prompt_toolkit.layout.containers import FloatContainer
+from prompt_toolkit.layout.containers import Float, FloatContainer
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Box
 
-from ccs_plus.adapters import display_configuration, runtime_from_provider
+from ccs_plus.adapters import (
+    check_provider_connectivity,
+    display_configuration,
+    runtime_from_provider,
+)
 from ccs_plus.domain import (
     AppKind,
     ClaudeRuntime,
@@ -44,7 +49,13 @@ from ccs_plus.domain import (
     ProviderError,
 )
 from ccs_plus.launch_history import LaunchHistory
-from ccs_plus.sessions import Session, list_sessions
+from ccs_plus.sessions import (
+    Session,
+    SessionMessage,
+    delete_session,
+    list_sessions,
+    read_session_messages,
+)
 from ccs_plus.settings import AppSettings
 
 # High-contrast neon-on-dark (bright selection, clear active pane).
@@ -64,6 +75,23 @@ STYLE = Style.from_dict(
         "frame.active.label": "#58a6ff bold",
         "frame.scroll": "#8b949e",
         "frame.active.scroll": "#58a6ff bold",
+        "popup": "bg:#161b22 #f0f6fc",
+        "popup.border": "bg:#161b22 #58a6ff bold",
+        "popup.title.badge": "bg:#1f6feb #ffffff bold",
+        "popup.title.text": "bg:#161b22 #ffffff bold",
+        "popup.title.hint": "bg:#161b22 #8b949e",
+        "popup.footer.badge.latest": "bg:#238636 #ffffff bold",
+        "popup.footer.badge.history": "bg:#d29922 #0a0e14 bold",
+        "popup.footer.hint": "bg:#161b22 #8b949e",
+        "popup.header.title": "bg:#161b22 #ffffff bold",
+        "popup.header.meta": "bg:#161b22 #8b949e",
+        "popup.user.badge": "bg:#238636 #ffffff bold",
+        "popup.user.pipe": "bg:#161b22 #3fb950 bold",
+        "popup.user.text": "bg:#161b22 #f0f6fc bold",
+        "popup.assistant.badge": "bg:#1f6feb #ffffff bold",
+        "popup.assistant.pipe": "bg:#161b22 #58a6ff bold",
+        "popup.assistant.text": "bg:#161b22 #c9d1d9",
+        "popup.divider": "bg:#161b22 #30363d",
         "item": "#c9d1d9",
         "item.selected": "bg:#3b4554 #ffffff bold",
         "item.focused": "bg:#1f6feb #ffffff bold",
@@ -425,6 +453,9 @@ def _session_matches_cwd(session_cwd: str, scope_cwd: Path) -> bool:
         scope = scope_cwd
     if os.path.normcase(str(session_path)) == os.path.normcase(str(scope)):
         return True
+    with contextlib.suppress(Exception):
+        if scope == Path.home().resolve() or scope == Path("/"):
+            return False
     try:
         session_path.relative_to(scope)
         return True
@@ -478,6 +509,10 @@ class _LaunchScreen:
         self.button_index = 0
         self.status = ""
         self.status_error = False
+        self._pending_delete_session: Session | None = None
+        self._preview_session: Session | None = None
+        self._preview_messages: list[SessionMessage] = []
+        self._preview_scroll = 0
 
         self._focus_sink = Window(
             content=FormattedTextControl("", focusable=True, show_cursor=False),
@@ -680,6 +715,12 @@ class _LaunchScreen:
         self.session_index = 0
         self._session_scroll = 0
         self._clamp_session_index()
+        self.status = (
+            "Showing all projects' sessions"
+            if self.sessions_scope == "all"
+            else "Showing current directory sessions"
+        )
+        self.status_error = False
 
     @property
     def selected_session(self) -> Session | None:
@@ -724,6 +765,7 @@ class _LaunchScreen:
         self._invalidate_session_filter()
         self._sync_provider_index()
         self._sync_permission_selection()
+        self._pending_delete_session = None
         self.status = ""
         self.status_error = False
         self._ensure_provider_visible()
@@ -731,9 +773,237 @@ class _LaunchScreen:
         self._sync_layout_focus()
 
     def _set_session(self, index: int) -> None:
+        if self._pending_delete_session is not None:
+            self._pending_delete_session = None
+            self.status = ""
+            self.status_error = False
         max_index = max(0, self._session_entry_count() - 1)
         self.session_index = max(0, min(index, max_index))
         self._ensure_session_visible()
+
+    def _request_delete_session(self) -> None:
+        session = self.selected_session
+        if session is None:
+            self.status = "Cannot delete 'New session'"
+            self.status_error = True
+            return
+        self._pending_delete_session = session
+        self.status = f"Delete '{session.title}'? Press y to confirm (esc to cancel)"
+        self.status_error = True
+
+    def _confirm_delete_session(self) -> None:
+        session = self._pending_delete_session
+        self._pending_delete_session = None
+        if session is None:
+            return
+        success = delete_session(self.settings, session)
+        if not success:
+            self.status = f"Failed to delete session: {session.title}"
+            self.status_error = True
+            return
+        if self.current_app in self._sessions_cache:
+            self._sessions_cache[self.current_app] = [
+                s
+                for s in self._sessions_cache[self.current_app]
+                if s.session_id != session.session_id
+            ]
+        self._invalidate_session_filter()
+        max_index = max(0, self._session_entry_count() - 1)
+        if self.session_index > max_index:
+            self.session_index = max(0, max_index)
+        self._ensure_session_visible()
+        self.status = f"Deleted session: {session.title}"
+        self.status_error = False
+
+    def _test_current_provider(self) -> None:
+        provider = self.current_provider
+        if provider is None:
+            self.status = "No provider selected"
+            self.status_error = True
+            return
+        self.status = f"Testing connection to {provider.name}..."
+        self.status_error = False
+
+        def worker() -> None:
+            ok, msg = check_provider_connectivity(provider)
+            self.status = f"{provider.name}: {msg}"
+            self.status_error = not ok
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _preview_width(self, default: int = 80) -> int:
+        win = getattr(self, "_preview_window", None)
+        info = getattr(win, "render_info", None) if win is not None else None
+        width = getattr(info, "window_width", None) if info is not None else None
+        if isinstance(width, int):
+            return max(30, width + 2)
+        return default
+
+    def _preview_height(self, default: int = 20) -> int:
+        win = getattr(self, "_preview_window", None)
+        info = getattr(win, "render_info", None) if win is not None else None
+        height = getattr(info, "window_height", None) if info is not None else None
+        if isinstance(height, int):
+            return max(5, height)
+        return default
+
+    def _preview_total_lines(self) -> int:
+        lines = self._preview_lines()
+        total = 0
+        for item in lines:
+            text = item[1]
+            total += text.count("\n")
+        return max(1, total)
+
+    def _open_preview(self) -> None:
+        session = self.selected_session
+        if session is None:
+            self.status = "Cannot preview 'New session'"
+            self.status_error = True
+            return
+        self._preview_session = session
+        self._preview_messages = read_session_messages(self.settings, session)
+        self.status = ""
+        self.status_error = False
+
+        # Default: scroll to the latest conversation turn at the bottom
+        height = self._preview_height(default=20)
+        total_lines = self._preview_total_lines()
+        self._preview_scroll = max(0, total_lines - height)
+        preview_win = getattr(self, "_preview_window", None)
+        if preview_win is not None:
+            preview_win.vertical_scroll = self._preview_scroll
+        self._sync_layout_focus()
+
+    def _close_preview(self) -> None:
+        self._preview_session = None
+        self._preview_messages = []
+        self._preview_scroll = 0
+        self._sync_layout_focus()
+
+    def _scroll_preview(self, delta: int) -> None:
+        height = self._preview_height(default=20)
+        max_scroll = max(0, self._preview_total_lines() - height)
+        self._preview_scroll = max(0, min(self._preview_scroll + delta, max_scroll))
+        preview_win = getattr(self, "_preview_window", None)
+        if preview_win is not None:
+            preview_win.vertical_scroll = self._preview_scroll
+
+    def _popup_top_text(self) -> StyleAndTextTuples:
+        if self._preview_session is None:
+            return []
+        width = self._preview_width()
+        border = "class:popup.border"
+        badge_style = "class:popup.title.badge"
+        hint_style = "class:popup.title.hint"
+
+        title = self._preview_session.title or self._preview_session.session_id
+        badge = " PREVIEW "
+        hint = " [Esc / Enter: close] "
+
+        prefix_len = len("╔═╡") + len(badge) + len("╞═ ")
+        suffix_len = len(" ═╡") + len(hint) + len("╞═╗")
+        avail = max(10, width - prefix_len - suffix_len)
+        if len(title) > avail:
+            title = title[: max(0, avail - 1)] + "…"
+
+        used = prefix_len + len(title) + suffix_len
+        pad = max(0, width - used)
+
+        return [
+            (border, "╔═╡"),
+            (badge_style, badge),
+            (border, "╞═ "),
+            ("class:popup.title.text", f"{title}"),
+            (border, " ═╡"),
+            (hint_style, hint),
+            (border, "╞" + "═" * (pad + 1) + "╗"),
+        ]
+
+    def _popup_bottom_text(self) -> StyleAndTextTuples:
+        if self._preview_session is None:
+            return []
+        width = self._preview_width()
+        border = "class:popup.border"
+        hint_style = "class:popup.footer.hint"
+
+        height = self._preview_height()
+        total_lines = self._preview_total_lines()
+        max_scroll = max(0, total_lines - height)
+
+        if max_scroll == 0 or self._preview_scroll >= max_scroll:
+            status_text = " LATEST "
+            status_style = "class:popup.footer.badge.latest"
+        elif self._preview_scroll == 0:
+            status_text = " TOP "
+            status_style = "class:popup.footer.badge.history"
+        else:
+            pct = int((self._preview_scroll / max_scroll) * 100)
+            status_text = f" {pct}% "
+            status_style = "class:popup.footer.badge.history"
+
+        hint = " ↑↓/jk: scroll · PgUp/PgDn: page "
+        left_len = len("╚═╡") + len(hint) + len("╞")
+        right_len = len("╡") + len(status_text) + len("╞═╝")
+        used = left_len + right_len
+        pad = max(0, width - used)
+
+        return [
+            (border, "╚═╡"),
+            (hint_style, hint),
+            (border, "╞" + "═" * pad + "╡"),
+            (status_style, status_text),
+            (border, "╞═╝"),
+        ]
+
+    def _popup_vert_text(self) -> StyleAndTextTuples:
+        height = max(1, self._preview_height())
+        return [("class:popup.border", "║\n" * height)]
+
+    def _preview_lines(self) -> StyleAndTextTuples:
+        if self._preview_session is None:
+            return []
+        lines: StyleAndTextTuples = []
+        app_name = self.current_app.display_name
+        time_str = datetime.fromtimestamp(self._preview_session.modified_at).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        cwd_str = _short_path(self._preview_session.cwd) if self._preview_session.cwd else "—"
+
+        lines.append(("", "\n"))
+        lines.append(("class:popup.header.title", f"  ◆ {self._preview_session.title}\n"))
+        lines.append(
+            (
+                "class:popup.header.meta",
+                f"    App: {app_name}  ·  Updated: {time_str}  ·  CWD: {cwd_str}\n",
+            )
+        )
+        lines.append(("class:popup.divider", "  " + "┄" * 58 + "\n\n"))
+
+        if not self._preview_messages:
+            lines.append(
+                ("class:item.muted", "  (no conversation messages found for this session)\n\n")
+            )
+            return lines
+
+        for msg in self._preview_messages:
+            if msg.role == "user":
+                lines.append(("class:popup.user.badge", "  ▸ USER "))
+                lines.append(("", "\n"))
+                for line in msg.text.strip().splitlines():
+                    lines.append(("class:popup.user.pipe", "  │ "))
+                    lines.append(("class:popup.user.text", f"{line}\n"))
+            else:
+                lines.append(("class:popup.assistant.badge", f"  ▸ {app_name.upper()} "))
+                lines.append(("", "\n"))
+                for line in msg.text.strip().splitlines():
+                    lines.append(("class:popup.assistant.pipe", "  │ "))
+                    lines.append(("class:popup.assistant.text", f"{line}\n"))
+            lines.append(("", "\n"))
+
+        return lines
 
     def _focus_order(self) -> list[str]:
         return ["app", "sessions", "provider", "permissions", "buttons"]
@@ -758,6 +1028,12 @@ class _LaunchScreen:
         self._sync_layout_focus()
 
     def _sync_layout_focus(self) -> None:
+        if self._preview_session is not None:
+            target = getattr(self, "_preview_window", None)
+            if target is not None:
+                with contextlib.suppress(Exception):
+                    self.application.layout.focus(target)
+                    return
         target = {
             "app": getattr(self, "_app_window", None),
             "provider": getattr(self, "_provider_window", None),
@@ -964,6 +1240,18 @@ class _LaunchScreen:
         ]
 
     def _footer_text(self) -> StyleAndTextTuples:
+        if self._preview_session is not None:
+            return [
+                ("class:footer", " "),
+                ("class:footer.key", "preview"),
+                ("class:footer", " · "),
+                ("class:footer.key", "esc / enter"),
+                ("class:footer", " close · "),
+                ("class:footer.key", "↑↓/jk"),
+                ("class:footer", " scroll · "),
+                ("class:footer.key", "pgup/pgdn"),
+                ("class:footer", " page "),
+            ]
         pane = self.focus
         parts: StyleAndTextTuples = [
             ("class:footer", " "),
@@ -979,11 +1267,40 @@ class _LaunchScreen:
             ("class:footer", " launch · "),
             ("class:footer.key", "/"),
             ("class:footer", " filter · "),
-            ("class:footer.key", "a"),
-            ("class:footer", " scope · "),
-            ("class:footer.key", "esc"),
-            ("class:footer", " "),
         ]
+        if pane == "sessions":
+            parts.extend(
+                [
+                    ("class:footer.key", "p"),
+                    ("class:footer", " prev · "),
+                    ("class:footer.key", "n"),
+                    ("class:footer", " new · "),
+                    ("class:footer.key", "d"),
+                    ("class:footer", " del · "),
+                    ("class:footer.key", "a"),
+                    ("class:footer", " scope · "),
+                ]
+            )
+        elif pane == "provider":
+            parts.extend(
+                [
+                    ("class:footer.key", "t"),
+                    ("class:footer", " test · "),
+                ]
+            )
+        else:
+            parts.extend(
+                [
+                    ("class:footer.key", "a"),
+                    ("class:footer", " scope · "),
+                ]
+            )
+        parts.extend(
+            [
+                ("class:footer.key", "esc"),
+                ("class:footer", " "),
+            ]
+        )
         filt = self._active_filter()
         if self.filter_mode or filt:
             parts.extend(
@@ -1492,7 +1809,62 @@ class _LaunchScreen:
             style="class:root",
         )
         self._root_container = root
-        container: FloatContainer = FloatContainer(content=root, floats=[])
+        left_border = Window(
+            FormattedTextControl(self._popup_vert_text, focusable=False, show_cursor=False),
+            width=1,
+            dont_extend_width=True,
+            style="class:popup.border",
+        )
+        right_border = Window(
+            FormattedTextControl(self._popup_vert_text, focusable=False, show_cursor=False),
+            width=1,
+            dont_extend_width=True,
+            style="class:popup.border",
+        )
+        top_border = Window(
+            FormattedTextControl(self._popup_top_text, focusable=False, show_cursor=False),
+            height=1,
+            dont_extend_height=True,
+            style="class:popup.border",
+        )
+        bottom_border = Window(
+            FormattedTextControl(self._popup_bottom_text, focusable=False, show_cursor=False),
+            height=1,
+            dont_extend_height=True,
+            style="class:popup.border",
+        )
+        self._preview_window = Window(
+            content=_ScrollListControl(
+                lambda: FormattedText(self._preview_lines()),
+                on_click_row=lambda row: None,
+                on_scroll=lambda d: self._scroll_preview(d * 3),
+                on_activate=lambda: None,
+                get_cursor_position=lambda: Point(
+                    x=0, y=min(self._preview_scroll, max(0, self._preview_total_lines() - 1))
+                ),
+            ),
+            wrap_lines=True,
+            style="class:popup",
+        )
+        popup_box = HSplit(
+            [
+                top_border,
+                VSplit([left_border, self._preview_window, right_border]),
+                bottom_border,
+            ],
+            style="class:popup",
+        )
+        float_popup = Float(
+            content=ConditionalContainer(
+                content=popup_box,
+                filter=Condition(lambda: self._preview_session is not None),
+            ),
+            top=1,
+            bottom=1,
+            left=2,
+            right=2,
+        )
+        container: FloatContainer = FloatContainer(content=root, floats=[float_popup])
         bindings = self._key_bindings()
         initial_focus = {
             "app": self._app_window,
@@ -1553,14 +1925,25 @@ class _LaunchScreen:
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
-        list_nav = Condition(lambda: not self.filter_mode)
-        filtering = Condition(lambda: self.filter_mode)
+        preview_open = Condition(lambda: self._preview_session is not None)
+        list_nav = Condition(lambda: not self.filter_mode and self._preview_session is None)
+        filtering = Condition(lambda: self.filter_mode and self._preview_session is None)
         can_filter = Condition(
-            lambda: not self.filter_mode and self.focus in {"provider", "sessions"}
+            lambda: not self.filter_mode
+            and self._preview_session is None
+            and self.focus in {"provider", "sessions"}
         )
 
         @bindings.add("escape", eager=True)
         def _esc(event: Any) -> None:
+            if self._preview_session is not None:
+                self._close_preview()
+                return
+            if self._pending_delete_session is not None:
+                self._pending_delete_session = None
+                self.status = "Deletion cancelled"
+                self.status_error = False
+                return
             if self.filter_mode:
                 self._clear_filter()
                 return
@@ -1569,15 +1952,59 @@ class _LaunchScreen:
                 return
             event.app.exit(result=None)
 
+        @bindings.add("enter", filter=preview_open, eager=True)
+        def _preview_enter(event: Any) -> None:
+            self._close_preview()
+
+        @bindings.add("p", filter=preview_open, eager=True)
+        def _preview_toggle(event: Any) -> None:
+            self._close_preview()
+
+        @bindings.add("q", filter=preview_open, eager=True)
+        def _preview_q(event: Any) -> None:
+            self._close_preview()
+
+        @bindings.add("home", filter=preview_open, eager=True)
+        def _preview_home(event: Any) -> None:
+            self._scroll_preview(-999999)
+
+        @bindings.add("end", filter=preview_open, eager=True)
+        def _preview_end(event: Any) -> None:
+            self._scroll_preview(999999)
+
+        @bindings.add("up", filter=preview_open, eager=True)
+        def _preview_up(event: Any) -> None:
+            self._scroll_preview(-2)
+
+        @bindings.add("k", filter=preview_open, eager=True)
+        def _preview_k(event: Any) -> None:
+            self._scroll_preview(-2)
+
+        @bindings.add("down", filter=preview_open, eager=True)
+        def _preview_down(event: Any) -> None:
+            self._scroll_preview(2)
+
+        @bindings.add("j", filter=preview_open, eager=True)
+        def _preview_j(event: Any) -> None:
+            self._scroll_preview(2)
+
+        @bindings.add("pageup", filter=preview_open, eager=True)
+        def _preview_pgup(event: Any) -> None:
+            self._scroll_preview(-10)
+
+        @bindings.add("pagedown", filter=preview_open, eager=True)
+        def _preview_pgdn(event: Any) -> None:
+            self._scroll_preview(10)
+
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event: Any) -> None:
             event.app.exit(result=None)
 
-        @bindings.add("tab", eager=True)
+        @bindings.add("tab", filter=list_nav, eager=True)
         def _tab(event: Any) -> None:
             self._move_focus(1)
 
-        @bindings.add("s-tab", eager=True)
+        @bindings.add("s-tab", filter=list_nav, eager=True)
         def _s_tab(event: Any) -> None:
             self._move_focus(-1)
 
@@ -1621,6 +2048,14 @@ class _LaunchScreen:
 
         @bindings.add("enter", eager=True)
         def _enter(event: Any) -> None:
+            if self._preview_session is not None:
+                self._close_preview()
+                return
+            if self._pending_delete_session is not None:
+                self._pending_delete_session = None
+                self.status = "Deletion cancelled"
+                self.status_error = False
+                return
             if self.filter_mode:
                 self.filter_mode = False
                 self._sync_layout_focus()
@@ -1657,11 +2092,62 @@ class _LaunchScreen:
         def _slash(event: Any) -> None:
             self._start_filter()
 
-        sessions_scope = Condition(lambda: self.focus == "sessions" and not self.filter_mode)
+        scope_toggleable = Condition(
+            lambda: not self.filter_mode
+            and self._pending_delete_session is None
+            and self._preview_session is None
+            and self.focus in {"app", "sessions"}
+        )
+        sessions_scope = Condition(
+            lambda: self.focus == "sessions"
+            and not self.filter_mode
+            and self._preview_session is None
+        )
+        provider_scope = Condition(
+            lambda: self.focus == "provider"
+            and not self.filter_mode
+            and self._preview_session is None
+        )
+        pending_delete = Condition(
+            lambda: self._pending_delete_session is not None
+            and self._preview_session is None
+        )
 
-        @bindings.add("a", filter=sessions_scope, eager=True)
+        @bindings.add("a", filter=scope_toggleable, eager=True)
         def _toggle_scope(event: Any) -> None:
             self._toggle_sessions_scope()
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
+        @bindings.add("p", filter=sessions_scope, eager=True)
+        def _preview_session_key(event: Any) -> None:
+            self._open_preview()
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
+        @bindings.add("n", filter=sessions_scope, eager=True)
+        def _new_session(event: Any) -> None:
+            self._set_session(0)
+            self.status = "Selected new session"
+            self.status_error = False
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
+        @bindings.add("d", filter=sessions_scope, eager=True)
+        def _delete_session_key(event: Any) -> None:
+            self._request_delete_session()
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
+        @bindings.add("y", filter=pending_delete, eager=True)
+        def _confirm_delete(event: Any) -> None:
+            self._confirm_delete_session()
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
+        @bindings.add("t", filter=provider_scope, eager=True)
+        def _test_provider(event: Any) -> None:
+            self._test_current_provider()
             with contextlib.suppress(Exception):
                 get_app().invalidate()
 
@@ -1674,12 +2160,15 @@ class _LaunchScreen:
             self._set_active_filter("")
 
         typing_start = Condition(
-            lambda: not self.filter_mode and self.focus in {"provider", "sessions"}
+            lambda: not self.filter_mode
+            and self._pending_delete_session is None
+            and self._preview_session is None
+            and self.focus in {"provider", "sessions"}
         )
 
         # Bind printable characters explicitly. Never use eager ``<any>``:
         # it also matches Vt100MouseEvent and would swallow clicks/scroll.
-        # 'a' on sessions (not filtering) is reserved for scope toggle above.
+        # Shortcuts on sessions/provider (not filtering) are reserved above.
         _printable = (
             "abcdefghijklmnopqrstuvwxyz"
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -1692,14 +2181,39 @@ class _LaunchScreen:
             def _filter_char(event: KeyPressEvent, char: str = ch) -> None:
                 self._filter_append(char)
 
-            if ch == "a":
-                # Covered by sessions_scope toggle when focus is sessions.
-                start_filter = Condition(lambda: not self.filter_mode and self.focus == "provider")
+            if ch in {"n", "d", "p"}:
+                # Covered by session pane shortcuts when focus is sessions.
+                start_filter = Condition(
+                    lambda: not self.filter_mode
+                    and self._pending_delete_session is None
+                    and self._preview_session is None
+                    and self.focus == "provider"
+                )
+            elif ch == "a":
+                # Covered by scope toggle when focus is app or sessions.
+                start_filter = Condition(
+                    lambda: not self.filter_mode
+                    and self._pending_delete_session is None
+                    and self._preview_session is None
+                    and self.focus == "provider"
+                )
+            elif ch == "t":
+                # Covered by provider test shortcut when focus is provider.
+                start_filter = Condition(
+                    lambda: not self.filter_mode
+                    and self._pending_delete_session is None
+                    and self._preview_session is None
+                    and self.focus == "sessions"
+                )
             else:
                 start_filter = typing_start
 
             @bindings.add(ch, filter=start_filter, eager=True)
             def _start_char(event: KeyPressEvent, char: str = ch) -> None:
+                if self._pending_delete_session is not None:
+                    self._pending_delete_session = None
+                    self.status = "Deletion cancelled"
+                    self.status_error = False
                 if char.isdigit() and char != "0":
                     self._jump(int(char) - 1)
                     return
@@ -1719,6 +2233,10 @@ class _LaunchScreen:
         return bindings
 
     def _navigate(self, delta: int) -> None:
+        if self._pending_delete_session is not None:
+            self._pending_delete_session = None
+            self.status = ""
+            self.status_error = False
         if self.focus == "sessions":
             self._set_session(self.session_index + delta)
         elif self.focus == "app":
