@@ -675,6 +675,88 @@ def test_active_list_shows_shortcut_numbers_when_focused(tmp_path: Path) -> None
         assert " 2 " in app_text_focused
 
 
+def test_launcher_cwd_selector_modal_and_switch(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    dir1 = tmp_path / "project1"
+    dir2 = tmp_path / "project2"
+    dir1.mkdir()
+    dir2.mkdir()
+    _write_codex_session(
+        settings,
+        session_id="11111111-1111-1111-1111-111111111111",
+        cwd=dir1,
+        title="proj1 session",
+    )
+    _write_codex_session(
+        settings,
+        session_id="22222222-2222-2222-2222-222222222222",
+        cwd=dir2,
+        title="proj2 session",
+    )
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=dir1,
+        )
+
+        assert screen.default_cwd.resolve() == dir1.resolve()
+        assert screen._show_cwd_selector is False
+        screen._open_cwd_selector()
+        assert screen._show_cwd_selector is True
+        dirs = [d.resolve() for d in screen.filtered_directories]
+        assert dir1.resolve() in dirs
+        assert dir2.resolve() in dirs
+
+        # Select dir2
+        screen._select_cwd(dir2)
+        assert screen._show_cwd_selector is False
+        assert screen.default_cwd.resolve() == dir2.resolve()
+        assert screen.selected_session is not None
+        assert screen.selected_session.session_id == "22222222-2222-2222-2222-222222222222"
+
+
+def test_launcher_c_key_switches_directory_and_launches(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    dir1 = tmp_path / "project1"
+    dir2 = tmp_path / "project2"
+    dir1.mkdir()
+    dir2.mkdir()
+    _write_codex_session(
+        settings,
+        session_id="11111111-1111-1111-1111-111111111111",
+        cwd=dir1,
+        title="proj1 session",
+    )
+    _write_codex_session(
+        settings,
+        session_id="22222222-2222-2222-2222-222222222222",
+        cwd=dir2,
+        title="proj2 session",
+    )
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    # Press 'c' to open cwd selector, down arrow to select dir2, enter to confirm,
+    # ctrl-enter (\n) to launch directly
+    keys = "c\x1b[B\r\n"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=dir1,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is not None
+    assert plan.cwd == dir2.resolve()
+
+
 
 
 

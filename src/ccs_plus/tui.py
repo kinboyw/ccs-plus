@@ -519,6 +519,11 @@ class _LaunchScreen:
         self._preview_scroll = 0
         self._show_help = False
         self._help_scroll = 0
+        self._show_cwd_selector = False
+        self._cwd_index = 0
+        self._cwd_scroll = 0
+        self._cwd_filter = ""
+        self._recent_directories: list[Path] = []
 
         self._focus_sink = Window(
             content=FormattedTextControl("", focusable=True, show_cursor=False),
@@ -941,6 +946,7 @@ class _LaunchScreen:
                     ("1 - 9", "Quick jump to item number in active list"),
                     ("Enter", "Advance to next pane / activate button"),
                     ("Ctrl+Enter / C-j", "Direct launch immediately with selection"),
+                    ("c", "Switch working directory (recent projects popup)"),
                     ("?", "Toggle this help cheat sheet"),
                     ("Esc", "Cancel current mode or exit"),
                 ],
@@ -963,12 +969,13 @@ class _LaunchScreen:
                 ],
             ),
             (
-                "Preview Popup",
+                "Preview / CWD Popups",
                 [
-                    ("↑ / ↓  or  j / k", "Scroll preview line-by-line"),
+                    ("↑ / ↓  or  j / k", "Navigate / scroll line-by-line"),
                     ("PgUp / PgDn", "Scroll preview page-by-page"),
-                    ("Home / End", "Jump to earliest history / latest messages"),
-                    ("Esc / Enter / q", "Close preview popup"),
+                    ("1 - 9", "Quick select item number (CWD selector)"),
+                    ("Home / End", "Jump to top / bottom"),
+                    ("Esc / Enter / q", "Close popup (Enter selects in CWD)"),
                 ],
             ),
         ]
@@ -978,6 +985,181 @@ class _LaunchScreen:
                 lines.append(("class:popup.key", f"    {key:<18}"))
                 lines.append(("class:item", f"  {desc}\n"))
             lines.append(("", "\n"))
+        return lines
+
+    def _discover_recent_directories(self) -> list[Path]:
+        current = self.default_cwd.resolve()
+        dirs = [current]
+        seen = {os.path.normcase(str(current))}
+
+        for app in self.apps:
+            if app not in self._sessions_cache:
+                self._sessions_cache[app] = list_sessions(self.settings, app)
+            for session in self._sessions_cache[app]:
+                if not session.cwd:
+                    continue
+                try:
+                    p = Path(session.cwd).expanduser().resolve()
+                    key = os.path.normcase(str(p))
+                    if p.is_dir() and key not in seen:
+                        seen.add(key)
+                        dirs.append(p)
+                except (OSError, RuntimeError):
+                    continue
+        return dirs
+
+    @property
+    def filtered_directories(self) -> list[Path]:
+        if not self._cwd_filter:
+            return self._recent_directories
+        return [
+            d
+            for d in self._recent_directories
+            if _fuzzy_match(self._cwd_filter, d.name, str(d))
+        ]
+
+    def _open_cwd_selector(self) -> None:
+        self._recent_directories = self._discover_recent_directories()
+        self._cwd_filter = ""
+        self._cwd_index = 0
+        self._cwd_scroll = 0
+        self._show_cwd_selector = True
+        self._sync_layout_focus()
+
+    def _close_cwd_selector(self) -> None:
+        self._show_cwd_selector = False
+        self._cwd_filter = ""
+        self._sync_layout_focus()
+
+    def _select_cwd(self, directory: Path) -> None:
+        self._close_cwd_selector()
+        self.default_cwd = directory.resolve()
+        self._invalidate_session_filter()
+        self.session_index = 1 if self.filtered_sessions else 0
+        self._session_scroll = 0
+        self._clamp_session_index()
+        self.status = f"Working directory set to: {_short_path(str(self.default_cwd))}"
+        self.status_error = False
+
+    def _navigate_cwd(self, delta: int) -> None:
+        count = len(self.filtered_directories)
+        if count == 0:
+            return
+        self._cwd_index = max(0, min(self._cwd_index + delta, count - 1))
+        cwd_win = getattr(self, "_cwd_window", None)
+        if cwd_win is not None:
+            cwd_win.vertical_scroll = self._cwd_index * _SESSION_ROW
+
+    def _jump_cwd(self, index: int) -> None:
+        count = len(self.filtered_directories)
+        if 0 <= index < count:
+            self._cwd_index = index
+            cwd_win = getattr(self, "_cwd_window", None)
+            if cwd_win is not None:
+                cwd_win.vertical_scroll = self._cwd_index * _SESSION_ROW
+
+    def _cwd_height(self, default: int = 15) -> int:
+        win = getattr(self, "_cwd_window", None)
+        info = getattr(win, "render_info", None) if win is not None else None
+        height = getattr(info, "window_height", None) if info is not None else None
+        if isinstance(height, int):
+            return max(5, height)
+        return default
+
+    def _cwd_width(self, default: int = 70) -> int:
+        win = getattr(self, "_cwd_window", None)
+        info = getattr(win, "render_info", None) if win is not None else None
+        width = getattr(info, "window_width", None) if info is not None else None
+        if isinstance(width, int):
+            return max(30, width + 2)
+        return default
+
+    def _cwd_top_text(self) -> StyleAndTextTuples:
+        width = self._cwd_width()
+        border = "class:popup.border"
+        badge_style = "class:popup.title.badge"
+        hint_style = "class:popup.title.hint"
+
+        badge = " CWD "
+        title = "SWITCH WORKING DIRECTORY"
+        filt = f" /{self._cwd_filter}█" if self._cwd_filter else ""
+        hint = " [Esc: cancel · Enter: select] "
+
+        prefix_len = len("╔═╡") + len(badge) + len("╞═ ")
+        suffix_len = len(" ═╡") + len(hint) + len("╞═╗")
+        avail = max(10, width - prefix_len - suffix_len)
+        full_title = f"{title}{filt}"
+        if len(full_title) > avail:
+            full_title = full_title[: max(0, avail - 1)] + "…"
+
+        used = prefix_len + len(full_title) + suffix_len
+        pad = max(0, width - used)
+
+        return [
+            (border, "╔═╡"),
+            (badge_style, badge),
+            (border, "╞═ "),
+            ("class:popup.title.text", full_title),
+            (border, " ═╡"),
+            (hint_style, hint),
+            (border, "╞" + "═" * (pad + 1) + "╗"),
+        ]
+
+    def _cwd_bottom_text(self) -> StyleAndTextTuples:
+        width = self._cwd_width()
+        border = "class:popup.border"
+        hint_style = "class:popup.footer.hint"
+
+        hint = " ↑↓/jk: nav · 1-9: jump · type: filter · Esc: close "
+        left_len = len("╚═╡") + len(hint)
+        right_len = len("╞═╝")
+        used = left_len + right_len
+        pad = max(0, width - used)
+
+        return [
+            (border, "╚═╡"),
+            (hint_style, hint),
+            (border, "╞" + "═" * (pad + 1) + "╝"),
+        ]
+
+    def _cwd_vert_text(self) -> StyleAndTextTuples:
+        height = max(1, self._cwd_height())
+        return [("class:popup.border", "║\n" * height)]
+
+    def _cwd_lines(self) -> StyleAndTextTuples:
+        lines: StyleAndTextTuples = []
+        dirs = self.filtered_directories
+        if not dirs:
+            lines.append(("", "\n"))
+            lines.append(("class:item.muted", "    (no matching directories found)\n"))
+            return lines
+
+        for index, path in enumerate(dirs):
+            selected = index == self._cwd_index
+            is_current = path == self.default_cwd.resolve()
+            name = path.name or str(path)
+            mark = " (current)" if is_current else ""
+            title = f"{name}{mark}"
+            subtitle = _short_path(str(path))
+            shortcut_num = (index + 1) if index < 9 else None
+
+            def handler(mouse_event: MouseEvent, target_path: Path = path) -> object:
+                if mouse_event.event_type != MouseEventType.MOUSE_DOWN:
+                    return None
+                self._select_cwd(target_path)
+                with contextlib.suppress(Exception):
+                    get_app().invalidate()
+                return None
+
+            self._append_entry(
+                lines,
+                focused=True,
+                selected=selected,
+                title=title,
+                subtitle=subtitle,
+                shortcut_num=shortcut_num,
+                mouse_handler=handler,
+            )
         return lines
 
     def _preview_width(self, default: int = 80) -> int:
@@ -1185,6 +1367,12 @@ class _LaunchScreen:
         self._sync_layout_focus()
 
     def _sync_layout_focus(self) -> None:
+        if self._show_cwd_selector:
+            target = getattr(self, "_cwd_window", None)
+            if target is not None:
+                with contextlib.suppress(Exception):
+                    self.application.layout.focus(target)
+                    return
         if self._show_help:
             target = getattr(self, "_help_window", None)
             if target is not None:
@@ -1403,6 +1591,22 @@ class _LaunchScreen:
         ]
 
     def _footer_text(self) -> StyleAndTextTuples:
+        if self._show_cwd_selector:
+            return [
+                ("class:footer", " "),
+                ("class:footer.key", "cwd"),
+                ("class:footer", " · "),
+                ("class:footer.key", "esc / c"),
+                ("class:footer", " close · "),
+                ("class:footer.key", "enter"),
+                ("class:footer", " select · "),
+                ("class:footer.key", "↑↓/jk"),
+                ("class:footer", " nav · "),
+                ("class:footer.key", "1-9"),
+                ("class:footer", " jump · "),
+                ("class:footer.key", "/"),
+                ("class:footer", " filter "),
+            ]
         if self._show_help:
             return [
                 ("class:footer", " "),
@@ -1470,6 +1674,8 @@ class _LaunchScreen:
             )
         parts.extend(
             [
+                ("class:footer.key", "c"),
+                ("class:footer", " cwd · "),
                 ("class:footer.key", "?"),
                 ("class:footer", " help · "),
                 ("class:footer.key", "esc"),
@@ -2123,7 +2329,62 @@ class _LaunchScreen:
             left=4,
             right=4,
         )
-        container: FloatContainer = FloatContainer(content=root, floats=[float_popup, float_help])
+        cwd_left_border = Window(
+            FormattedTextControl(self._cwd_vert_text, focusable=False, show_cursor=False),
+            width=1,
+            dont_extend_width=True,
+            style="class:popup.border",
+        )
+        cwd_right_border = Window(
+            FormattedTextControl(self._cwd_vert_text, focusable=False, show_cursor=False),
+            width=1,
+            dont_extend_width=True,
+            style="class:popup.border",
+        )
+        cwd_top_border = Window(
+            FormattedTextControl(self._cwd_top_text, focusable=False, show_cursor=False),
+            height=1,
+            dont_extend_height=True,
+            style="class:popup.border",
+        )
+        cwd_bottom_border = Window(
+            FormattedTextControl(self._cwd_bottom_text, focusable=False, show_cursor=False),
+            height=1,
+            dont_extend_height=True,
+            style="class:popup.border",
+        )
+        self._cwd_window = Window(
+            content=_ScrollListControl(
+                lambda: FormattedText(self._cwd_lines()),
+                on_click_row=lambda row: None,
+                on_scroll=lambda d: self._navigate_cwd(d),
+                on_activate=lambda: None,
+                get_cursor_position=lambda: Point(x=0, y=self._cwd_index * _SESSION_ROW),
+            ),
+            wrap_lines=False,
+            style="class:popup",
+        )
+        cwd_box = HSplit(
+            [
+                cwd_top_border,
+                VSplit([cwd_left_border, self._cwd_window, cwd_right_border]),
+                cwd_bottom_border,
+            ],
+            style="class:popup",
+        )
+        float_cwd = Float(
+            content=ConditionalContainer(
+                content=cwd_box,
+                filter=Condition(lambda: self._show_cwd_selector),
+            ),
+            top=2,
+            bottom=2,
+            left=4,
+            right=4,
+        )
+        container: FloatContainer = FloatContainer(
+            content=root, floats=[float_popup, float_help, float_cwd]
+        )
         bindings = self._key_bindings()
         initial_focus = {
             "app": self._app_window,
@@ -2184,20 +2445,121 @@ class _LaunchScreen:
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
-        help_open = Condition(lambda: self._show_help)
-        preview_open = Condition(lambda: self._preview_session is not None and not self._show_help)
+        cwd_open = Condition(lambda: self._show_cwd_selector)
+        help_open = Condition(lambda: self._show_help and not self._show_cwd_selector)
+        preview_open = Condition(
+            lambda: self._preview_session is not None
+            and not self._show_help
+            and not self._show_cwd_selector
+        )
         list_nav = Condition(
-            lambda: not self.filter_mode and not self._show_help and self._preview_session is None
+            lambda: not self.filter_mode
+            and not self._show_help
+            and not self._show_cwd_selector
+            and self._preview_session is None
         )
         filtering = Condition(
-            lambda: self.filter_mode and not self._show_help and self._preview_session is None
+            lambda: self.filter_mode
+            and not self._show_help
+            and not self._show_cwd_selector
+            and self._preview_session is None
         )
         can_filter = Condition(
             lambda: not self.filter_mode
             and not self._show_help
+            and not self._show_cwd_selector
             and self._preview_session is None
             and self.focus in {"provider", "sessions"}
         )
+
+        @bindings.add("escape", filter=cwd_open, eager=True)
+        def _cwd_esc(event: Any) -> None:
+            self._close_cwd_selector()
+
+        @bindings.add("c", filter=cwd_open, eager=True)
+        def _cwd_c_toggle(event: Any) -> None:
+            if not self._cwd_filter:
+                self._close_cwd_selector()
+            else:
+                self._cwd_filter += "c"
+                self._cwd_index = 0
+
+        @bindings.add("q", filter=cwd_open, eager=True)
+        def _cwd_q(event: Any) -> None:
+            if not self._cwd_filter:
+                self._close_cwd_selector()
+            else:
+                self._cwd_filter += "q"
+                self._cwd_index = 0
+
+        @bindings.add("enter", filter=cwd_open, eager=True)
+        def _cwd_enter(event: Any) -> None:
+            dirs = self.filtered_directories
+            if dirs and 0 <= self._cwd_index < len(dirs):
+                self._select_cwd(dirs[self._cwd_index])
+            else:
+                self._close_cwd_selector()
+
+        @bindings.add("up", filter=cwd_open, eager=True)
+        def _cwd_up(event: Any) -> None:
+            self._navigate_cwd(-1)
+
+        @bindings.add("k", filter=cwd_open, eager=True)
+        def _cwd_k(event: Any) -> None:
+            if not self._cwd_filter:
+                self._navigate_cwd(-1)
+            else:
+                self._cwd_filter += "k"
+                self._cwd_index = 0
+
+        @bindings.add("down", filter=cwd_open, eager=True)
+        def _cwd_down(event: Any) -> None:
+            self._navigate_cwd(1)
+
+        @bindings.add("j", filter=cwd_open, eager=True)
+        def _cwd_j(event: Any) -> None:
+            if not self._cwd_filter:
+                self._navigate_cwd(1)
+            else:
+                self._cwd_filter += "j"
+                self._cwd_index = 0
+
+        @bindings.add("pageup", filter=cwd_open, eager=True)
+        def _cwd_pgup(event: Any) -> None:
+            self._navigate_cwd(-5)
+
+        @bindings.add("pagedown", filter=cwd_open, eager=True)
+        def _cwd_pgdn(event: Any) -> None:
+            self._navigate_cwd(5)
+
+        @bindings.add("home", filter=cwd_open, eager=True)
+        def _cwd_home(event: Any) -> None:
+            self._jump_cwd(0)
+
+        @bindings.add("end", filter=cwd_open, eager=True)
+        def _cwd_end(event: Any) -> None:
+            self._jump_cwd(len(self.filtered_directories) - 1)
+
+        @bindings.add("backspace", filter=cwd_open, eager=True)
+        def _cwd_bs(event: Any) -> None:
+            if self._cwd_filter:
+                self._cwd_filter = self._cwd_filter[:-1]
+                self._cwd_index = 0
+
+        @bindings.add("c-u", filter=cwd_open, eager=True)
+        def _cwd_clear(event: Any) -> None:
+            self._cwd_filter = ""
+            self._cwd_index = 0
+
+        for digit in range(1, 10):
+
+            @bindings.add(str(digit), filter=cwd_open, eager=True)
+            def _cwd_num(event: Any, n: int = digit) -> None:
+                if not self._cwd_filter:
+                    self._jump_cwd(n - 1)
+                else:
+                    self._cwd_filter += str(n)
+                    self._cwd_index = 0
 
         @bindings.add("escape", filter=help_open, eager=True)
         def _help_esc(event: Any) -> None:
@@ -2249,6 +2611,9 @@ class _LaunchScreen:
 
         @bindings.add("escape", eager=True)
         def _esc(event: Any) -> None:
+            if self._show_cwd_selector:
+                self._close_cwd_selector()
+                return
             if self._show_help:
                 self._close_help()
                 return
@@ -2364,6 +2729,13 @@ class _LaunchScreen:
 
         @bindings.add("enter", eager=True)
         def _enter(event: Any) -> None:
+            if self._show_cwd_selector:
+                dirs = self.filtered_directories
+                if dirs and 0 <= self._cwd_index < len(dirs):
+                    self._select_cwd(dirs[self._cwd_index])
+                else:
+                    self._close_cwd_selector()
+                return
             if self._show_help:
                 self._close_help()
                 return
@@ -2456,6 +2828,12 @@ class _LaunchScreen:
             with contextlib.suppress(Exception):
                 get_app().invalidate()
 
+        @bindings.add("c", filter=list_nav, eager=True)
+        def _cwd_key(event: Any) -> None:
+            self._open_cwd_selector()
+            with contextlib.suppress(Exception):
+                get_app().invalidate()
+
         @bindings.add("n", filter=sessions_scope, eager=True)
         def _new_session(event: Any) -> None:
             self._set_session(0)
@@ -2493,6 +2871,7 @@ class _LaunchScreen:
         typing_start = Condition(
             lambda: not self.filter_mode
             and not self._show_help
+            and not self._show_cwd_selector
             and self._pending_delete_session is None
             and self._preview_session is None
             and self.focus in {"provider", "sessions"}
@@ -2518,15 +2897,17 @@ class _LaunchScreen:
                 start_filter = Condition(
                     lambda: not self.filter_mode
                     and not self._show_help
+                    and not self._show_cwd_selector
                     and self._pending_delete_session is None
                     and self._preview_session is None
                     and self.focus == "provider"
                 )
-            elif ch in {"a", "?"}:
-                # Covered by scope toggle / help modal when focus is app or sessions.
+            elif ch in {"a", "?", "c"}:
+                # Covered by scope toggle / help modal / cwd selector when focus is app or sessions.
                 start_filter = Condition(
                     lambda: not self.filter_mode
                     and not self._show_help
+                    and not self._show_cwd_selector
                     and self._pending_delete_session is None
                     and self._preview_session is None
                     and self.focus == "provider"
@@ -2536,6 +2917,7 @@ class _LaunchScreen:
                 start_filter = Condition(
                     lambda: not self.filter_mode
                     and not self._show_help
+                    and not self._show_cwd_selector
                     and self._pending_delete_session is None
                     and self._preview_session is None
                     and self.focus == "sessions"
