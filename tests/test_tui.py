@@ -597,6 +597,51 @@ def test_launcher_preview_defaults_to_latest_and_scrolls(tmp_path: Path) -> None
         assert screen._preview_session is None
 
 
+def test_launcher_help_modal_toggle(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        assert screen._show_help is False
+        screen._open_help()
+        assert screen._show_help is True
+        assert screen._help_total_lines() > 10
+
+        screen._close_help()
+        assert screen._show_help is False
+
+
+def test_launcher_space_opens_preview(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "88888888-8888-8888-8888-888888888888"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="space test")
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    # Space opens preview, esc closes it, second esc exits launcher
+    keys = " \x1b\x1b"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=tmp_path,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is None
+
+
+
 
 
 
