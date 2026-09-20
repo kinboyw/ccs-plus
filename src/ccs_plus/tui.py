@@ -101,6 +101,7 @@ STYLE = Style.from_dict(
         "item.focused-sub": "bg:#1f6feb #dbeafe",
         "item.marker.selected": "bg:#3b4554 #58a6ff bold",
         "item.marker.focused": "bg:#1f6feb #ffffff bold",
+        "item.shortcut": "#58a6ff bold",
         "item.muted": "#8b949e",
         "badge.claude": "bg:#d97706 #0a0e14 bold",
         "badge.codex": "bg:#10b981 #0a0e14 bold",
@@ -1614,18 +1615,27 @@ class _LaunchScreen:
         selected: bool,
         title: str,
         subtitle: str,
+        shortcut_num: int | None = None,
         mouse_handler: Callable[[MouseEvent], object] | None = None,
     ) -> None:
         style = self._row_style(focused=focused and selected, selected=selected)
         sub_style = "class:item.focused-sub" if focused and selected else "class:item.muted"
-        marker = "▸ " if selected else "  "
-        marker_style = (
-            "class:item.marker.focused"
-            if focused and selected
-            else "class:item.marker.selected"
-            if selected
-            else style
-        )
+        if focused and shortcut_num is not None:
+            marker = f"▸{shortcut_num}" if selected else f" {shortcut_num}"
+            marker_style = (
+                "class:item.marker.focused"
+                if selected
+                else "class:item.shortcut"
+            )
+        else:
+            marker = "▸ " if selected else "  "
+            marker_style = (
+                "class:item.marker.focused"
+                if focused and selected
+                else "class:item.marker.selected"
+                if selected
+                else style
+            )
         title_text = f"{title}\n"
         sub_text = f"    {subtitle}\n"
         if mouse_handler is None:
@@ -1662,6 +1672,7 @@ class _LaunchScreen:
         focused = self.focus == "sessions"
         for row, (key, title, subtitle) in enumerate(entries):
             selected = row == self.session_index if key != -2 else False
+            shortcut_num = (row + 1) if (row < 9 and key != -2) else None
 
             def handler(mouse_event: MouseEvent, entry: int = row, selectable: int = key) -> object:
                 if mouse_event.event_type != MouseEventType.MOUSE_DOWN:
@@ -1681,6 +1692,7 @@ class _LaunchScreen:
                 selected=selected,
                 title=title,
                 subtitle=subtitle,
+                shortcut_num=shortcut_num,
                 mouse_handler=handler,
             )
         return lines
@@ -1692,14 +1704,22 @@ class _LaunchScreen:
             selected = index == self.app_index
             row_focused = focused and selected
             style = self._row_style(focused=row_focused, selected=selected)
-            marker = "● " if selected else "○ "
-            marker_style = (
-                "class:item.marker.focused"
-                if row_focused
-                else "class:item.marker.selected"
-                if selected
-                else style
-            )
+            if focused and index < 9:
+                marker = f"{index + 1}▸" if selected else f"{index + 1} "
+                marker_style = (
+                    "class:item.marker.focused"
+                    if selected
+                    else "class:item.shortcut"
+                )
+            else:
+                marker = "● " if selected else "○ "
+                marker_style = (
+                    "class:item.marker.focused"
+                    if row_focused
+                    else "class:item.marker.selected"
+                    if selected
+                    else style
+                )
             badge_style = (
                 f"class:badge.{app.style_key}.focused"
                 if row_focused
@@ -1743,6 +1763,7 @@ class _LaunchScreen:
             model = display.model or "no model"
             uses = self.history.usage(provider).launches
             mark = " · last" if provider.id == default_id else ""
+            shortcut_num = (index + 1) if index < 9 else None
 
             def handler(mouse_event: MouseEvent, entry: int = index) -> object:
                 if mouse_event.event_type != MouseEventType.MOUSE_DOWN:
@@ -1761,6 +1782,7 @@ class _LaunchScreen:
                 selected=selected,
                 title=f"{provider.name}{mark}",
                 subtitle=f"{model} · {uses} use{'s' if uses != 1 else ''}",
+                shortcut_num=shortcut_num,
                 mouse_handler=handler,
             )
         return lines
@@ -1773,14 +1795,22 @@ class _LaunchScreen:
             selected = index == self.permission_index
             style = self._row_style(focused=focused and selected, selected=selected)
             sub_style = "class:item.focused-sub" if focused and selected else "class:item.muted"
-            marker = "● " if selected else "○ "
-            marker_style = (
-                "class:item.marker.focused"
-                if focused and selected
-                else "class:item.marker.selected"
-                if selected
-                else style
-            )
+            if focused and index < 9:
+                marker = f"{index + 1}▸" if selected else f"{index + 1} "
+                marker_style = (
+                    "class:item.marker.focused"
+                    if selected
+                    else "class:item.shortcut"
+                )
+            else:
+                marker = "● " if selected else "○ "
+                marker_style = (
+                    "class:item.marker.focused"
+                    if focused and selected
+                    else "class:item.marker.selected"
+                    if selected
+                    else style
+                )
 
             def handler(mouse_event: MouseEvent, entry: int = index) -> object:
                 if mouse_event.event_type != MouseEventType.MOUSE_DOWN:

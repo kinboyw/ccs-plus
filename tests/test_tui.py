@@ -641,6 +641,41 @@ def test_launcher_space_opens_preview(tmp_path: Path) -> None:
     assert plan is None
 
 
+def test_active_list_shows_shortcut_numbers_when_focused(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    codex_p = _provider(AppKind.CODEX, "Codex P")
+    claude_p = _provider(AppKind.CLAUDE, "Claude P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "99999999-9999-9999-9999-999999999999"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="num test")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[codex_p, claude_p],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        # When sessions is focused, sessions list lines contain shortcut numbers
+        screen._set_focus("sessions")
+        session_text = "".join(part[1] for part in screen._session_lines())
+        assert "▸" in session_text
+        assert "1" in session_text or "2" in session_text
+
+        # App list does NOT show numbers when unfocused
+        app_text_unfocused = "".join(part[1] for part in screen._app_lines())
+        assert " 1▸" not in app_text_unfocused
+        assert "●" in app_text_unfocused
+
+        # When app is focused, app list shows numbers
+        screen._set_focus("app")
+        app_text_focused = "".join(part[1] for part in screen._app_lines())
+        assert " 1▸" in app_text_focused
+        assert " 2 " in app_text_focused
+
+
+
 
 
 
