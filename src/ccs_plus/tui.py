@@ -456,12 +456,6 @@ class _LaunchScreen:
         if last_app is not None and last_app in self.apps:
             self.app_index = self.apps.index(last_app)
 
-        self.session_index = 0
-        self.provider_index = 0
-        self.button_index = 0
-        self.focus = "app"
-        self.status = ""
-        self.status_error = False
         self._sessions_cache: dict[AppKind, list[Session]] = {}
         self._filtered_sessions_cache: list[Session] | None = None
         self._filtered_providers_cache: list[Provider] | None = None
@@ -473,6 +467,18 @@ class _LaunchScreen:
         # Default: only sessions for the launch/working directory (like native CLIs).
         self.sessions_scope: SessionScope = "this_dir"
 
+        if self.filtered_sessions:
+            self.session_index = 1
+            self.focus = "sessions"
+        else:
+            self.session_index = 0
+            self.focus = "app"
+
+        self.provider_index = 0
+        self.button_index = 0
+        self.status = ""
+        self.status_error = False
+
         self._focus_sink = Window(
             content=FormattedTextControl("", focusable=True, show_cursor=False),
             height=0,
@@ -481,6 +487,7 @@ class _LaunchScreen:
 
         self._sync_provider_index()
         self._sync_permission_selection()
+        self._ensure_session_visible()
         self._build_application()
 
     def run(self) -> LaunchPlan | None:
@@ -1487,8 +1494,15 @@ class _LaunchScreen:
         self._root_container = root
         container: FloatContainer = FloatContainer(content=root, floats=[])
         bindings = self._key_bindings()
+        initial_focus = {
+            "app": self._app_window,
+            "sessions": self._sessions_window,
+            "provider": self._provider_window,
+            "permissions": self._permission_window,
+            "buttons": self._buttons_window,
+        }.get(self.focus, self._app_window)
         self.application: Application[LaunchPlan | None] = Application(
-            layout=Layout(container, focused_element=self._app_window),
+            layout=Layout(container, focused_element=initial_focus),
             key_bindings=bindings,
             style=STYLE,
             mouse_support=True,

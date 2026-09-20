@@ -257,9 +257,10 @@ def test_launcher_resume_selects_session(tmp_path: Path) -> None:
     sid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="resume me")
     history = LaunchHistory.load(tmp_path / "history.json")
-    # Nested under default_cwd still matches this-dir scope.
-    # app → sessions → down (resume) → provider → permissions → launch
-    keys = "\r\x1b[B\r\r\r\r"
+    # Nested under default_cwd matches this-dir scope, so launcher starts
+    # focused on sessions with the recent session already selected.
+    # sessions → provider → permissions → buttons → launch
+    keys = "\r\r\r\r"
     plan = _drive(
         lambda: run_launcher(
             settings=settings,
@@ -301,8 +302,9 @@ def test_launcher_this_dir_hides_foreign_sessions_until_all_scope(tmp_path: Path
     )
     history = LaunchHistory.load(tmp_path / "history.json")
 
-    # Default this-dir from local: only local session is listed (New + local).
-    # app → sessions → down → provider → permissions → launch
+    # Default this-dir from local: launcher starts focused on sessions with
+    # the local session selected.
+    # sessions → provider → permissions → buttons → launch
     local_plan = _drive(
         lambda: run_launcher(
             settings=settings,
@@ -310,15 +312,15 @@ def test_launcher_this_dir_hides_foreign_sessions_until_all_scope(tmp_path: Path
             history=history,
             default_cwd=local,
         ),
-        "\r\x1b[B\r\r\r\r",
+        "\r\r\r\r",
         delay=0.4,
     )
     assert local_plan is not None
     assert local_plan.session is not None
     assert local_plan.session.session_id == local_sid
 
-    # Press 'a' on sessions to show all projects. Newest foreign is listed first
-    # after New session, so one down selects it.
+    # Launcher is already focused on sessions; pressing 'a' toggles scope to show all projects.
+    # Newest foreign is listed first after New session, so one down selects it.
     all_plan = _drive(
         lambda: run_launcher(
             settings=settings,
@@ -326,7 +328,7 @@ def test_launcher_this_dir_hides_foreign_sessions_until_all_scope(tmp_path: Path
             history=history,
             default_cwd=local,
         ),
-        "\ra\x1b[B\r\r\r\r",
+        "a\x1b[B\r\r\r\r",
         delay=0.4,
     )
     assert all_plan is not None
@@ -349,3 +351,57 @@ def test_session_matches_cwd_exact_and_nested(tmp_path: Path) -> None:
     assert _session_matches_cwd(str(nested), root)
     assert not _session_matches_cwd(str(other), root)
     assert not _session_matches_cwd("", root)
+
+
+def test_launcher_defaults_to_recent_session_and_focuses_sessions(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    older_sid = "11111111-1111-1111-1111-111111111111"
+    newer_sid = "22222222-2222-2222-2222-222222222222"
+    _write_codex_session(
+        settings,
+        session_id=older_sid,
+        cwd=session_cwd,
+        title="older session",
+        stamp="2026-08-13T10-00-00",
+    )
+    _write_codex_session(
+        settings,
+        session_id=newer_sid,
+        cwd=session_cwd,
+        title="newer session",
+        stamp="2026-08-13T11-00-00",
+    )
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        assert screen.focus == "sessions"
+        assert screen.session_index == 1
+        assert screen.selected_session is not None
+        assert screen.selected_session.session_id == newer_sid
+        assert screen.application.layout.current_window == screen._sessions_window
+
+
+def test_launcher_defaults_to_app_focus_when_no_sessions(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        assert screen.focus == "app"
+        assert screen.session_index == 0
+        assert screen.selected_session is None
+        assert screen.application.layout.current_window == screen._app_window
+
