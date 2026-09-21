@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Mapping
 from os import environ
@@ -142,6 +144,53 @@ def display_configuration(provider: Provider) -> ProviderDisplay:
         return provider_adapter_for(provider.app).display(provider)
     except ProviderError:
         return ProviderDisplay(endpoint=None, model=None, effort=None)
+
+
+def check_provider_connectivity(provider: Provider, timeout: float = 4.0) -> tuple[bool, str]:
+    """Test network connectivity to a provider's endpoint."""
+    if provider.is_official:
+        return True, "Official provider (managed by CLI login)"
+    runtime = runtime_from_provider(provider)
+    if not runtime.endpoint:
+        return False, "No endpoint configured"
+
+    url = runtime.endpoint.strip()
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
+    headers = {"User-Agent": "ccs-plus"}
+    if runtime.api_key:
+        headers["Authorization"] = f"Bearer {runtime.api_key}"
+        headers["x-api-key"] = runtime.api_key
+    if provider.app is AppKind.CLAUDE:
+        headers["anthropic-version"] = "2023-06-01"
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            return True, f"Connected ({latency_ms}ms, HTTP {resp.status})"
+    except urllib.error.HTTPError as exc:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        if exc.code in (200, 204):
+            return True, f"Connected ({latency_ms}ms, HTTP {exc.code})"
+        if exc.code in (401, 403):
+            return False, f"Auth failed ({latency_ms}ms, HTTP {exc.code})"
+        if exc.code in (404, 405):
+            return True, f"Connected ({latency_ms}ms, HTTP {exc.code})"
+        return False, f"HTTP {exc.code} ({latency_ms}ms)"
+    except urllib.error.URLError as exc:
+        reason = str(exc.reason)
+        if "Name or service not known" in reason or "nodename nor servname provided" in reason:
+            return False, "DNS resolution failed"
+        if "Connection refused" in reason:
+            return False, "Connection refused"
+        return False, f"Connection failed: {reason}"
+    except TimeoutError:
+        return False, f"Timed out after {timeout:.1f}s"
+    except Exception as exc:
+        return False, f"Error: {exc}"
 
 
 def _environment_settings(value: NewProvider) -> dict[str, Any]:

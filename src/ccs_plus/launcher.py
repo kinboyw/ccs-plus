@@ -284,6 +284,41 @@ def _opencode_config_content(
     return json.dumps(document, separators=(",", ":"))
 
 
+_applied_visibilities: set[tuple[str, str, str]] = set()
+
+
+def prewarm_launch_environment(
+    provider: Provider,
+    settings: AppSettings,
+    working_directory: Path,
+) -> None:
+    """Pre-warm runtime environment and home visibility in a background thread."""
+    try:
+        runtime = runtime_from_provider(provider)
+        if isinstance(runtime, (CodexRuntime, GeminiRuntime)):
+            return
+        runtime_home = settings.runtime_home(provider.app.value)
+        cache_key = (
+            provider.app.value,
+            str(runtime_home.resolve()),
+            str(working_directory.resolve()),
+        )
+        if cache_key in _applied_visibilities:
+            return
+        visibility = home_visibility_for(
+            runtime,
+            settings,
+            runtime_home,
+            enabled=not (
+                isinstance(runtime, OpenCodeRuntime) and _is_user_home_directory(working_directory)
+            ),
+        )
+        visibility.apply()
+        _applied_visibilities.add(cache_key)
+    except Exception as exc:
+        logger.debug("Background prewarm for %s failed: %s", provider.name, exc)
+
+
 def build_launch_spec(
     provider: Provider,
     settings: AppSettings,
@@ -331,17 +366,31 @@ def build_launch_spec(
         )
     env = environment_with_defaults()
     _apply_proxy(env, settings.proxy)
+    # Fast boot: suppress non-essential background update checks and telemetry
+    env.setdefault("DO_NOT_TRACK", "1")
+    env.setdefault("npm_config_update_notifier", "false")
+    env.setdefault("CLAUDE_DISABLE_AUTO_UPDATER", "1")
+    env.setdefault("CHECKPOINT_DISABLE", "1")
+
     runtime_home = settings.runtime_home(provider.app.value)
     if not isinstance(runtime, (CodexRuntime, GeminiRuntime)):
-        visibility = home_visibility_for(
-            runtime,
-            settings,
-            runtime_home,
-            enabled=not (
-                isinstance(runtime, OpenCodeRuntime) and _is_user_home_directory(working_directory)
-            ),
+        cache_key = (
+            provider.app.value,
+            str(runtime_home.resolve()),
+            str(working_directory.resolve()),
         )
-        visibility.apply()
+        if cache_key not in _applied_visibilities:
+            visibility = home_visibility_for(
+                runtime,
+                settings,
+                runtime_home,
+                enabled=not (
+                    isinstance(runtime, OpenCodeRuntime)
+                    and _is_user_home_directory(working_directory)
+                ),
+            )
+            visibility.apply()
+            _applied_visibilities.add(cache_key)
     model = model_override or runtime.model
     effort = effort_override or runtime.effort
     session_id = resume.session_id if resume is not None else None
@@ -433,8 +482,14 @@ def runtime_launcher_for(
     raise ProviderError(f"Unsupported runtime: {type(runtime).__name__}.")
 
 
-def launch(spec: LaunchSpec) -> int:
+def launch(spec: LaunchSpec, *, replace_process: bool = False) -> int:
     logger.info("Starting native CLI in %s with argv=%r", spec.cwd, spec.argv)
+    if replace_process and hasattr(os, "execvpe") and os.name != "nt":
+        try:
+            os.chdir(spec.cwd)
+            os.execvpe(spec.argv[0], list(spec.argv), spec.env)
+        except OSError as exc:
+            logger.warning("os.execvpe failed; falling back to subprocess: %s", exc)
     completed = subprocess.run(list(spec.argv), cwd=spec.cwd, env=spec.env, check=False)
     logger.info("Native CLI exited with code %s", completed.returncode)
     return completed.returncode

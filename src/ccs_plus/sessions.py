@@ -28,6 +28,14 @@ class Session:
     title: str
     cwd: str
     modified_at: float
+    source_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class SessionMessage:
+    role: str
+    text: str
+    timestamp: float | None = None
 
 
 class SessionReader:
@@ -170,6 +178,7 @@ def _parse_rollout(path: Path, app: AppKind) -> Session | None:
         title=_clip(title),
         cwd=cwd,
         modified_at=timestamp,
+        source_path=path,
     )
 
 
@@ -263,6 +272,7 @@ def _parse_project_log(path: Path, app: AppKind) -> Session | None:
         title=_clip(title),
         cwd=cwd,
         modified_at=timestamp,
+        source_path=path,
     )
 
 
@@ -305,6 +315,7 @@ def _list_prompt_histories(home: Path, app: AppKind) -> list[Session]:
                             title=_clip(title or Path(cwd).name or session_id[:8]),
                             cwd=cwd,
                             modified_at=timestamp,
+                            source_path=history_path,
                         )
                     elif timestamp > existing.modified_at:
                         by_id[session_id] = Session(
@@ -313,6 +324,7 @@ def _list_prompt_histories(home: Path, app: AppKind) -> list[Session]:
                             title=existing.title,
                             cwd=existing.cwd or cwd,
                             modified_at=timestamp,
+                            source_path=history_path,
                         )
         except OSError:
             continue
@@ -359,11 +371,16 @@ def _list_opencode_db(home: Path, app: AppKind) -> list[Session]:
         return []
     try:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
+        cursor = conn.cursor()
+        cols = {row["name"] for row in cursor.execute("PRAGMA table_info(session)").fetchall()}
+        where = "WHERE time_archived IS NULL"
+        if "parent_id" in cols:
+            where += " AND (parent_id IS NULL OR parent_id = '')"
+        rows = cursor.execute(
+            f"""
             SELECT id, title, directory, time_updated, time_archived
             FROM session
-            WHERE time_archived IS NULL
+            {where}
             ORDER BY time_updated DESC
             LIMIT ?
             """,
@@ -395,6 +412,7 @@ def _list_opencode_db(home: Path, app: AppKind) -> list[Session]:
                 title=_clip(title or Path(cwd).name or session_id[:8]),
                 cwd=cwd,
                 modified_at=timestamp,
+                source_path=db_path,
             )
         )
     return sessions
@@ -405,3 +423,222 @@ def _clip(text: str) -> str:
     if len(cleaned) <= _TITLE_MAX:
         return cleaned
     return cleaned[: _TITLE_MAX - 1] + "…"
+
+
+def delete_session(settings: AppSettings, session: Session) -> bool:
+    """Delete or archive a session file or database entry."""
+    if session.app in {AppKind.CODEX, AppKind.CLAUDE}:
+        if session.source_path is not None and session.source_path.is_file():
+            try:
+                session.source_path.unlink()
+                return True
+            except OSError as exc:
+                logger.warning("Failed to delete session file %s: %s", session.source_path, exc)
+                return False
+        home = settings.runtime_home(session.app.value)
+        if session.app is AppKind.CODEX:
+            pattern = f"*{session.session_id}*.jsonl"
+            for candidate in (home / "sessions").rglob(pattern):
+                if candidate.is_file():
+                    try:
+                        candidate.unlink()
+                        return True
+                    except OSError:
+                        return False
+        elif session.app is AppKind.CLAUDE:
+            pattern = f"{session.session_id}.jsonl"
+            for candidate in (home / "projects").rglob(pattern):
+                if candidate.is_file():
+                    try:
+                        candidate.unlink()
+                        return True
+                    except OSError:
+                        return False
+        return False
+
+    if session.app is AppKind.OPENCODE:
+        db_path = session.source_path or (
+            settings.runtime_home(session.app.value) / "share" / "opencode" / "opencode.db"
+        )
+        if not db_path.is_file():
+            return False
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE session SET time_archived = ? WHERE id = ?",
+                    (int(datetime.now().timestamp() * 1000), session.session_id),
+                )
+                conn.commit()
+            return True
+        except sqlite3.Error as exc:
+            logger.warning("Failed to archive OpenCode session %s: %s", session.session_id, exc)
+            return False
+
+    if session.app is AppKind.GROK:
+        history_path = session.source_path
+        if history_path is None or not history_path.is_file():
+            return False
+        try:
+            with history_path.open("r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+            kept: list[str] = []
+            for line in lines:
+                try:
+                    doc = json.loads(line)
+                    if isinstance(doc, dict) and doc.get("session_id") == session.session_id:
+                        continue
+                except json.JSONDecodeError:
+                    pass
+                kept.append(line)
+            if kept:
+                with history_path.open("w", encoding="utf-8") as handle:
+                    handle.writelines(kept)
+            else:
+                history_path.unlink()
+            return True
+        except OSError as exc:
+            logger.warning("Failed to delete Grok session %s: %s", session.session_id, exc)
+            return False
+
+    return False
+
+
+def read_session_messages(
+    settings: AppSettings, session: Session, limit: int = 50
+) -> list[SessionMessage]:
+    """Read conversation messages for a session across supported apps."""
+    if session.app is AppKind.CODEX:
+        path = session.source_path
+        if path is None or not path.is_file():
+            home = settings.runtime_home(session.app.value)
+            candidates = list((home / "sessions").rglob(f"*{session.session_id}*.jsonl"))
+            if not candidates:
+                return []
+            path = candidates[0]
+        messages: list[SessionMessage] = []
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if len(line) > 64_000:
+                        continue
+                    try:
+                        doc = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if doc.get("type") == "response_item":
+                        payload = doc.get("payload")
+                        if isinstance(payload, dict):
+                            role = payload.get("role")
+                            if role in ("user", "assistant"):
+                                text = _text_from_content(payload.get("content"))
+                                if text and not text.startswith(
+                                    ("<INSTRUCTIONS>", "<environment_context>")
+                                ):
+                                    messages.append(SessionMessage(role=role, text=text))
+                    elif doc.get("type") == "event_msg":
+                        payload = doc.get("payload")
+                        if isinstance(payload, dict):
+                            item = payload.get("item")
+                            if isinstance(item, dict):
+                                itype = item.get("type")
+                                if itype in ("UserMessage", "AgentMessage"):
+                                    role = "user" if itype == "UserMessage" else "assistant"
+                                    text = _text_from_content(item.get("content"))
+                                    if (
+                                        text
+                                        and not text.startswith(
+                                            ("<INSTRUCTIONS>", "<environment_context>")
+                                        )
+                                        and (not messages or messages[-1].text != text)
+                                    ):
+                                        messages.append(SessionMessage(role=role, text=text))
+        except OSError:
+            return []
+        return messages[-limit:]
+
+    if session.app is AppKind.CLAUDE:
+        path = session.source_path
+        if path is None or not path.is_file():
+            home = settings.runtime_home(session.app.value)
+            candidates = list((home / "projects").rglob(f"{session.session_id}.jsonl"))
+            if not candidates:
+                return []
+            path = candidates[0]
+        messages = []
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if len(line) > 64_000:
+                        continue
+                    try:
+                        doc = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    kind = doc.get("type")
+                    if kind in ("user", "assistant"):
+                        msg = doc.get("message")
+                        content = msg.get("content") if isinstance(msg, dict) else msg
+                        text = _text_from_content(content)
+                        if text:
+                            messages.append(SessionMessage(role=kind, text=text))
+        except OSError:
+            return []
+        return messages[-limit:]
+
+    if session.app is AppKind.OPENCODE:
+        db_path = session.source_path or (
+            settings.runtime_home(session.app.value) / "share" / "opencode" / "opencode.db"
+        )
+        if not db_path.is_file():
+            return []
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            rows = conn.execute(
+                """
+                SELECT m.data, p.data
+                FROM message m
+                JOIN part p ON m.id = p.message_id
+                WHERE m.session_id = ?
+                ORDER BY m.time_created ASC, p.time_created ASC
+                """,
+                (session.session_id,),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error as exc:
+            logger.warning("Unable to read OpenCode session messages: %s", exc)
+            return []
+        messages = []
+        for m_raw, p_raw in rows:
+            try:
+                m_data = json.loads(m_raw)
+                p_data = json.loads(p_raw)
+            except json.JSONDecodeError:
+                continue
+            if p_data.get("type") == "text":
+                text = str(p_data.get("text", "")).strip()
+                if text:
+                    role = str(m_data.get("role", "user"))
+                    messages.append(SessionMessage(role=role, text=text))
+        return messages[-limit:]
+
+    if session.app is AppKind.GROK:
+        path = session.source_path
+        if path is None or not path.is_file():
+            return []
+        messages = []
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        doc = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if doc.get("session_id") == session.session_id:
+                        prompt = doc.get("prompt")
+                        if isinstance(prompt, str) and prompt.strip():
+                            messages.append(SessionMessage(role="user", text=prompt.strip()))
+        except OSError:
+            return []
+        return messages[-limit:]
+
+    return []

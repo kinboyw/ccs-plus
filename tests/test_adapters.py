@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 import tomlkit
 
-from ccs_plus.adapters import build_provider, display_configuration, runtime_from_provider
+from ccs_plus.adapters import (
+    build_provider,
+    check_provider_connectivity,
+    display_configuration,
+    runtime_from_provider,
+)
 from ccs_plus.domain import (
     AppKind,
     ClaudeRuntime,
@@ -242,3 +247,62 @@ def test_display_configuration_uses_codex_top_level_base_url_as_fallback() -> No
 
     assert display.endpoint == "https://top.example.test/v1"
     assert display.model == "example-model"
+
+
+def test_provider_connectivity_official() -> None:
+    provider = Provider(
+        id="claude-official",
+        app=AppKind.CLAUDE,
+        name="Official",
+        settings_config={},
+        endpoints=(),
+        category="official",
+        created_at=None,
+        notes=None,
+        is_current=True,
+    )
+    ok, msg = check_provider_connectivity(provider)
+    assert ok is True
+    assert "Official provider" in msg
+
+
+def test_provider_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__enter__.return_value = mock_resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: mock_resp)
+
+    provider = build_provider(_new_value(AppKind.CLAUDE), _CODEX)
+    ok, msg = check_provider_connectivity(provider)
+    assert ok is True
+    assert "Connected" in msg
+    assert "HTTP 200" in msg
+
+
+def test_provider_connectivity_auth_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import urllib.error
+    import urllib.request
+
+    err = urllib.error.HTTPError(
+        url="https://api.example.test/v1",
+        code=401,
+        msg="Unauthorized",
+        hdrs={},  # type: ignore[arg-type]
+        fp=io.BytesIO(b"{}"),
+    )
+
+    def raise_err(req, timeout):
+        raise err
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_err)
+
+    provider = build_provider(_new_value(AppKind.CLAUDE), _CODEX)
+    ok, msg = check_provider_connectivity(provider)
+    assert ok is False
+    assert "Auth failed" in msg
+    assert "HTTP 401" in msg

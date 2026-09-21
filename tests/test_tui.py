@@ -257,9 +257,10 @@ def test_launcher_resume_selects_session(tmp_path: Path) -> None:
     sid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="resume me")
     history = LaunchHistory.load(tmp_path / "history.json")
-    # Nested under default_cwd still matches this-dir scope.
-    # app → sessions → down (resume) → provider → permissions → launch
-    keys = "\r\x1b[B\r\r\r\r"
+    # Nested under default_cwd matches this-dir scope, so launcher starts
+    # focused on sessions with the recent session already selected.
+    # sessions → provider → permissions → buttons → launch
+    keys = "\r\r\r\r"
     plan = _drive(
         lambda: run_launcher(
             settings=settings,
@@ -301,8 +302,9 @@ def test_launcher_this_dir_hides_foreign_sessions_until_all_scope(tmp_path: Path
     )
     history = LaunchHistory.load(tmp_path / "history.json")
 
-    # Default this-dir from local: only local session is listed (New + local).
-    # app → sessions → down → provider → permissions → launch
+    # Default this-dir from local: launcher starts focused on sessions with
+    # the local session selected.
+    # sessions → provider → permissions → buttons → launch
     local_plan = _drive(
         lambda: run_launcher(
             settings=settings,
@@ -310,15 +312,15 @@ def test_launcher_this_dir_hides_foreign_sessions_until_all_scope(tmp_path: Path
             history=history,
             default_cwd=local,
         ),
-        "\r\x1b[B\r\r\r\r",
+        "\r\r\r\r",
         delay=0.4,
     )
     assert local_plan is not None
     assert local_plan.session is not None
     assert local_plan.session.session_id == local_sid
 
-    # Press 'a' on sessions to show all projects. Newest foreign is listed first
-    # after New session, so one down selects it.
+    # Launcher is already focused on sessions; pressing 'a' toggles scope to show all projects.
+    # Newest foreign is listed first after New session, so one down selects it.
     all_plan = _drive(
         lambda: run_launcher(
             settings=settings,
@@ -326,7 +328,7 @@ def test_launcher_this_dir_hides_foreign_sessions_until_all_scope(tmp_path: Path
             history=history,
             default_cwd=local,
         ),
-        "\ra\x1b[B\r\r\r\r",
+        "a\x1b[B\r\r\r\r",
         delay=0.4,
     )
     assert all_plan is not None
@@ -349,3 +351,407 @@ def test_session_matches_cwd_exact_and_nested(tmp_path: Path) -> None:
     assert _session_matches_cwd(str(nested), root)
     assert not _session_matches_cwd(str(other), root)
     assert not _session_matches_cwd("", root)
+
+
+def test_launcher_defaults_to_recent_session_and_focuses_sessions(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    older_sid = "11111111-1111-1111-1111-111111111111"
+    newer_sid = "22222222-2222-2222-2222-222222222222"
+    _write_codex_session(
+        settings,
+        session_id=older_sid,
+        cwd=session_cwd,
+        title="older session",
+        stamp="2026-08-13T10-00-00",
+    )
+    _write_codex_session(
+        settings,
+        session_id=newer_sid,
+        cwd=session_cwd,
+        title="newer session",
+        stamp="2026-08-13T11-00-00",
+    )
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        assert screen.focus == "sessions"
+        assert screen.session_index == 1
+        assert screen.selected_session is not None
+        assert screen.selected_session.session_id == newer_sid
+        assert screen.application.layout.current_window == screen._sessions_window
+
+
+def test_launcher_defaults_to_app_focus_when_no_sessions(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        assert screen.focus == "app"
+        assert screen.session_index == 0
+        assert screen.selected_session is None
+        assert screen.application.layout.current_window == screen._app_window
+
+
+def test_launcher_n_shortcut_selects_new_session(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "33333333-3333-3333-3333-333333333333"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="active session")
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    # In a directory with an active session, default launch would resume it.
+    # Pressing 'n' jumps to New Session, so the resulting plan has session=None.
+    # sessions (press n) → provider → permissions → buttons → launch
+    keys = "n\r\r\r\r"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=tmp_path,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is not None
+    assert plan.session is None
+
+
+def test_launcher_d_shortcut_deletes_session_with_confirmation(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "44444444-4444-4444-4444-444444444444"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="to be deleted")
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    day = settings.codex.user_home / "sessions" / "2026" / "08" / "13"
+    session_file = day / f"rollout-2026-08-13T12-00-00-{sid}.jsonl"
+    assert session_file.exists()
+
+    # sessions (press d to request delete, y to confirm, esc to cancel/exit)
+    keys = "dy\x1b"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=tmp_path,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is None
+    assert not session_file.exists()
+
+
+def test_launcher_d_shortcut_cancelled_by_escape(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "55555555-5555-5555-5555-555555555555"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="keep me")
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    day = settings.codex.user_home / "sessions" / "2026" / "08" / "13"
+    session_file = day / f"rollout-2026-08-13T12-00-00-{sid}.jsonl"
+    assert session_file.exists()
+
+    # sessions (press d to request delete, first esc cancels deletion, second esc exits)
+    keys = "d\x1b\x1b"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=tmp_path,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is None
+    assert session_file.exists()
+
+
+def test_launcher_t_shortcut_tests_provider(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CLAUDE, "Test Provider")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        screen._set_focus("provider")
+        screen._test_current_provider()
+        time.sleep(0.1)
+        assert "Test Provider" in screen.status
+
+
+def test_launcher_p_shortcut_opens_preview_and_closes_with_esc(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "66666666-6666-6666-6666-666666666666"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="previewable session")
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    # Press 'p' to open preview, 'esc' to close preview, then 'esc' to exit launcher
+    keys = "p\x1b\x1b"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=tmp_path,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is None
+
+
+def test_launcher_p_shortcut_cannot_preview_new_session(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        screen.session_index = 0
+        screen._open_preview()
+        assert screen._preview_session is None
+        assert "Cannot preview" in screen.status
+        assert screen.status_error is True
+
+
+def test_launcher_preview_defaults_to_latest_and_scrolls(tmp_path: Path) -> None:
+    from prompt_toolkit.data_structures import Size
+
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "77777777-7777-7777-7777-777777777777"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="scroll test")
+    out = DummyOutput()
+    out.get_size = lambda: Size(rows=30, columns=100)
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=out):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        screen.session_index = 1
+        screen._open_preview()
+        assert screen._preview_session is not None
+        # Verify rendered lines and scroll
+        total = screen._preview_total_lines()
+        assert total > 0
+        cursor_pos = screen._preview_window.content.get_cursor_position()
+        assert cursor_pos is not None
+        assert cursor_pos.y == screen._preview_scroll
+
+        # Test actual render scrolling
+        screen.application.renderer.render(screen.application, screen.application.layout)
+        assert screen._preview_window.render_info is not None
+
+        # Scrolling up decreases scroll
+        initial_scroll = screen._preview_scroll
+        screen._scroll_preview(-2)
+        assert screen._preview_scroll == max(0, initial_scroll - 2)
+        cursor_pos = screen._preview_window.content.get_cursor_position()
+        assert cursor_pos is not None
+        assert cursor_pos.y == screen._preview_scroll
+
+        # Closing clears preview
+        screen._close_preview()
+        assert screen._preview_session is None
+
+
+def test_launcher_help_modal_toggle(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        assert screen._show_help is False
+        screen._open_help()
+        assert screen._show_help is True
+        assert screen._help_total_lines() > 10
+
+        screen._close_help()
+        assert screen._show_help is False
+
+
+def test_launcher_space_opens_preview(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "88888888-8888-8888-8888-888888888888"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="space test")
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    # Space opens preview, esc closes it, second esc exits launcher
+    keys = " \x1b\x1b"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=tmp_path,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is None
+
+
+def test_active_list_shows_shortcut_numbers_when_focused(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    codex_p = _provider(AppKind.CODEX, "Codex P")
+    claude_p = _provider(AppKind.CLAUDE, "Claude P")
+    session_cwd = tmp_path / "work"
+    session_cwd.mkdir()
+    sid = "99999999-9999-9999-9999-999999999999"
+    _write_codex_session(settings, session_id=sid, cwd=session_cwd, title="num test")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[codex_p, claude_p],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=tmp_path,
+        )
+
+        # When sessions is focused, sessions list lines contain shortcut numbers
+        screen._set_focus("sessions")
+        session_text = "".join(part[1] for part in screen._session_lines())
+        assert "▸" in session_text
+        assert "1" in session_text or "2" in session_text
+
+        # App list does NOT show numbers when unfocused
+        app_text_unfocused = "".join(part[1] for part in screen._app_lines())
+        assert " 1▸" not in app_text_unfocused
+        assert "●" in app_text_unfocused
+
+        # When app is focused, app list shows numbers
+        screen._set_focus("app")
+        app_text_focused = "".join(part[1] for part in screen._app_lines())
+        assert " 1▸" in app_text_focused
+        assert " 2 " in app_text_focused
+
+
+def test_launcher_cwd_selector_modal_and_switch(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    dir1 = tmp_path / "project1"
+    dir2 = tmp_path / "project2"
+    dir1.mkdir()
+    dir2.mkdir()
+    _write_codex_session(
+        settings,
+        session_id="11111111-1111-1111-1111-111111111111",
+        cwd=dir1,
+        title="proj1 session",
+    )
+    _write_codex_session(
+        settings,
+        session_id="22222222-2222-2222-2222-222222222222",
+        cwd=dir2,
+        title="proj2 session",
+    )
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        screen = _LaunchScreen(
+            settings=settings,
+            providers=[provider],
+            history=LaunchHistory.load(tmp_path / "history.json"),
+            default_cwd=dir1,
+        )
+
+        assert screen.default_cwd.resolve() == dir1.resolve()
+        assert screen._show_cwd_selector is False
+        screen._open_cwd_selector()
+        assert screen._show_cwd_selector is True
+        dirs = [d.resolve() for d in screen.filtered_directories]
+        assert dir1.resolve() in dirs
+        assert dir2.resolve() in dirs
+
+        # Select dir2
+        screen._select_cwd(dir2)
+        assert screen._show_cwd_selector is False
+        assert screen.default_cwd.resolve() == dir2.resolve()
+        assert screen.selected_session is not None
+        assert screen.selected_session.session_id == "22222222-2222-2222-2222-222222222222"
+
+
+def test_launcher_c_key_switches_directory_and_launches(tmp_path: Path) -> None:
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CODEX, "Codex P")
+    dir1 = tmp_path / "project1"
+    dir2 = tmp_path / "project2"
+    dir1.mkdir()
+    dir2.mkdir()
+    _write_codex_session(
+        settings,
+        session_id="11111111-1111-1111-1111-111111111111",
+        cwd=dir1,
+        title="proj1 session",
+    )
+    _write_codex_session(
+        settings,
+        session_id="22222222-2222-2222-2222-222222222222",
+        cwd=dir2,
+        title="proj2 session",
+    )
+    history = LaunchHistory.load(tmp_path / "history.json")
+
+    # Press 'c' to open cwd selector, down arrow to select dir2, enter to confirm,
+    # ctrl-enter (\n) to launch directly
+    keys = "c\x1b[B\r\n"
+    plan = _drive(
+        lambda: run_launcher(
+            settings=settings,
+            providers=[provider],
+            history=history,
+            default_cwd=dir1,
+        ),
+        keys,
+        delay=0.4,
+    )
+    assert plan is not None
+    assert plan.cwd == dir2.resolve()

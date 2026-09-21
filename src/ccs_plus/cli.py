@@ -17,7 +17,7 @@ from ccs_plus.adapters import build_provider, display_configuration, runtime_fro
 from ccs_plus.database import ProviderRepository
 from ccs_plus.domain import AppKind, NewProvider, Provider, ProviderError, validate_new_provider
 from ccs_plus.launch_history import LaunchHistory
-from ccs_plus.launcher import build_launch_spec, launch
+from ccs_plus.launcher import LaunchSpec, build_launch_spec, launch
 from ccs_plus.managed_config import remove_managed_config
 from ccs_plus.provider_transfer import build_backup_document, parse_backup_document
 from ccs_plus.settings import AppSettings, load_settings
@@ -380,7 +380,7 @@ def _execute_plan(plan: LaunchPlan, settings: AppSettings, history: LaunchHistor
         always_approve=plan.always_approve,
     )
     history.record_launch(plan.provider)
-    exit_code = launch(spec)
+    exit_code = _run_launch(spec)
     if exit_code:
         raise click.exceptions.Exit(exit_code)
 
@@ -399,7 +399,14 @@ def _launch_selected_provider(
         provider.name,
         spec.cwd,
     )
-    return launch(spec)
+    return _run_launch(spec)
+
+
+def _run_launch(spec: LaunchSpec) -> int:
+    try:
+        return launch(spec, replace_process=True)
+    except TypeError:
+        return launch(spec)
 
 
 def _launch_history_path(settings: AppSettings) -> Path:

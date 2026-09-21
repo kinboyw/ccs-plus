@@ -906,3 +906,62 @@ def test_launch_logs_argv_and_exit_code_without_environment(monkeypatch, tmp_pat
     assert "native-cli" in caplog.text
     assert "Native CLI exited with code 0" in caplog.text
     assert "launch-secret-key" not in caplog.text
+
+
+def test_build_launch_spec_injects_fast_boot_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("ccs_plus.launcher.shutil.which", lambda _: "native-claude")
+    spec = build_launch_spec(_provider(AppKind.CLAUDE), make_app_settings(tmp_path), tmp_path)
+    assert spec.env["DO_NOT_TRACK"] == "1"
+    assert spec.env["npm_config_update_notifier"] == "false"
+    assert spec.env["CLAUDE_DISABLE_AUTO_UPDATER"] == "1"
+    assert spec.env["CHECKPOINT_DISABLE"] == "1"
+
+
+def test_prewarm_launch_environment_caches_visibility(tmp_path, monkeypatch) -> None:
+    from ccs_plus.launcher import _applied_visibilities, prewarm_launch_environment
+
+    monkeypatch.setattr("ccs_plus.launcher.shutil.which", lambda _: "native-claude")
+    settings = make_app_settings(tmp_path)
+    provider = _provider(AppKind.CLAUDE)
+
+    calls = []
+
+    class MockVisibility:
+        def apply(self):
+            calls.append("applied")
+
+    monkeypatch.setattr(
+        "ccs_plus.launcher.home_visibility_for",
+        lambda *args, **kwargs: MockVisibility(),
+    )
+
+    _applied_visibilities.clear()
+    prewarm_launch_environment(provider, settings, tmp_path)
+    assert calls == ["applied"]
+
+    # Calling again should use cache and not call apply again
+    prewarm_launch_environment(provider, settings, tmp_path)
+    assert calls == ["applied"]
+
+    # build_launch_spec also uses the cache
+    build_launch_spec(provider, settings, tmp_path)
+    assert calls == ["applied"]
+
+
+def test_launch_supports_replace_process(tmp_path, monkeypatch) -> None:
+    executed = []
+
+    class Completed:
+        returncode = 0
+
+    monkeypatch.setattr("os.chdir", lambda path: executed.append(("chdir", path)))
+    monkeypatch.setattr(
+        "os.execvpe",
+        lambda file, argv, env: executed.append(("execvpe", file, argv)),
+    )
+    monkeypatch.setattr("ccs_plus.launcher.subprocess.run", lambda *args, **kwargs: Completed())
+
+    spec = LaunchSpec(argv=("native-cli", "run"), cwd=tmp_path, env={"KEY": "VAL"})
+    launch(spec, replace_process=True)
+    assert ("chdir", tmp_path) in executed
+    assert ("execvpe", "native-cli", ["native-cli", "run"]) in executed
