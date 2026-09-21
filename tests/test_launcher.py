@@ -432,6 +432,7 @@ def test_launch_overrides_provider_model_and_effort_without_native_override_args
         profile_name = spec.argv[spec.argv.index("--model") + 1]
         assert spec.argv == (
             "native-cli",
+            "--no-memory",
             "--model",
             profile_name,
             "--reasoning-effort",
@@ -915,6 +916,8 @@ def test_build_launch_spec_injects_fast_boot_environment(tmp_path, monkeypatch) 
     assert spec.env["npm_config_update_notifier"] == "false"
     assert spec.env["CLAUDE_DISABLE_AUTO_UPDATER"] == "1"
     assert spec.env["CHECKPOINT_DISABLE"] == "1"
+    assert spec.env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert spec.env["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
 
 
 def test_prewarm_launch_environment_caches_visibility(tmp_path, monkeypatch) -> None:

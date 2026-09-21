@@ -174,7 +174,7 @@ class GrokLauncher(RuntimeLauncher):
     def build(self) -> list[str]:
         _clear(self.env, "GROK_HOME", "GROK_MODELS_BASE_URL", "GROK_MODELS_LIST_URL")
         self.env["GROK_HOME"] = str(self.runtime_home)
-        argv = [self.executable]
+        argv = [self.executable, "--no-memory"]
         if self.session_id:
             argv.extend(["--resume", self.session_id])
         managed = None if self.runtime.provider.is_official else self.runtime
@@ -243,7 +243,7 @@ class OpenCodeLauncher(RuntimeLauncher):
 def _opencode_permission_content(permission_mode: str) -> str:
     import json
 
-    return json.dumps({"permission": permission_mode}, separators=(",", ":"))
+    return json.dumps({"autoupdate": False, "permission": permission_mode}, separators=(",", ":"))
 
 
 def _opencode_config_content(
@@ -263,6 +263,7 @@ def _opencode_config_content(
     endpoint = _required(runtime.endpoint, "OpenCode endpoint")
     api_key = _required(runtime.api_key, "OpenCode API key")
     document: dict[str, object] = {
+        "autoupdate": False,
         "model": f"{provider_id}/{model_id}",
         "permission": permission_mode,
         "provider": {
@@ -371,6 +372,8 @@ def build_launch_spec(
     env.setdefault("npm_config_update_notifier", "false")
     env.setdefault("CLAUDE_DISABLE_AUTO_UPDATER", "1")
     env.setdefault("CHECKPOINT_DISABLE", "1")
+    env.setdefault("OPENCODE_DISABLE_AUTOUPDATE", "1")
+    env.setdefault("OPENCODE_DISABLE_MODELS_FETCH", "1")
 
     runtime_home = settings.runtime_home(provider.app.value)
     if not isinstance(runtime, (CodexRuntime, GeminiRuntime)):
