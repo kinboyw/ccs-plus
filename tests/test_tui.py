@@ -755,10 +755,3 @@ def test_launcher_c_key_switches_directory_and_launches(tmp_path: Path) -> None:
     )
     assert plan is not None
     assert plan.cwd == dir2.resolve()
-
-
-
-
-
-
-

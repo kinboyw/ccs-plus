@@ -965,4 +965,3 @@ def test_launch_supports_replace_process(tmp_path, monkeypatch) -> None:
     launch(spec, replace_process=True)
     assert ("chdir", tmp_path) in executed
     assert ("execvpe", "native-cli", ["native-cli", "run"]) in executed
-

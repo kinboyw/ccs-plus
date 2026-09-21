@@ -1027,9 +1027,7 @@ class _LaunchScreen:
         if not self._cwd_filter:
             return self._recent_directories
         return [
-            d
-            for d in self._recent_directories
-            if _fuzzy_match(self._cwd_filter, d.name, str(d))
+            d for d in self._recent_directories if _fuzzy_match(self._cwd_filter, d.name, str(d))
         ]
 
     def _open_cwd_selector(self) -> None:
@@ -1843,11 +1841,7 @@ class _LaunchScreen:
         sub_style = "class:item.focused-sub" if focused and selected else "class:item.muted"
         if focused and shortcut_num is not None:
             marker = f"▸{shortcut_num}" if selected else f" {shortcut_num}"
-            marker_style = (
-                "class:item.marker.focused"
-                if selected
-                else "class:item.shortcut"
-            )
+            marker_style = "class:item.marker.focused" if selected else "class:item.shortcut"
         else:
             marker = "▸ " if selected else "  "
             marker_style = (
@@ -1927,11 +1921,7 @@ class _LaunchScreen:
             style = self._row_style(focused=row_focused, selected=selected)
             if focused and index < 9:
                 marker = f"{index + 1}▸" if selected else f"{index + 1} "
-                marker_style = (
-                    "class:item.marker.focused"
-                    if selected
-                    else "class:item.shortcut"
-                )
+                marker_style = "class:item.marker.focused" if selected else "class:item.shortcut"
             else:
                 marker = "● " if selected else "○ "
                 marker_style = (
@@ -2018,11 +2008,7 @@ class _LaunchScreen:
             sub_style = "class:item.focused-sub" if focused and selected else "class:item.muted"
             if focused and index < 9:
                 marker = f"{index + 1}▸" if selected else f"{index + 1} "
-                marker_style = (
-                    "class:item.marker.focused"
-                    if selected
-                    else "class:item.shortcut"
-                )
+                marker_style = "class:item.marker.focused" if selected else "class:item.shortcut"
             else:
                 marker = "● " if selected else "○ "
                 marker_style = (
@@ -2463,28 +2449,36 @@ class _LaunchScreen:
         cwd_open = Condition(lambda: self._show_cwd_selector)
         help_open = Condition(lambda: self._show_help and not self._show_cwd_selector)
         preview_open = Condition(
-            lambda: self._preview_session is not None
-            and not self._show_help
-            and not self._show_cwd_selector
+            lambda: (
+                self._preview_session is not None
+                and not self._show_help
+                and not self._show_cwd_selector
+            )
         )
         list_nav = Condition(
-            lambda: not self.filter_mode
-            and not self._show_help
-            and not self._show_cwd_selector
-            and self._preview_session is None
+            lambda: (
+                not self.filter_mode
+                and not self._show_help
+                and not self._show_cwd_selector
+                and self._preview_session is None
+            )
         )
         filtering = Condition(
-            lambda: self.filter_mode
-            and not self._show_help
-            and not self._show_cwd_selector
-            and self._preview_session is None
+            lambda: (
+                self.filter_mode
+                and not self._show_help
+                and not self._show_cwd_selector
+                and self._preview_session is None
+            )
         )
         can_filter = Condition(
-            lambda: not self.filter_mode
-            and not self._show_help
-            and not self._show_cwd_selector
-            and self._preview_session is None
-            and self.focus in {"provider", "sessions"}
+            lambda: (
+                not self.filter_mode
+                and not self._show_help
+                and not self._show_cwd_selector
+                and self._preview_session is None
+                and self.focus in {"provider", "sessions"}
+            )
         )
 
         @bindings.add("escape", filter=cwd_open, eager=True)
@@ -2799,24 +2793,25 @@ class _LaunchScreen:
             self._start_filter()
 
         scope_toggleable = Condition(
-            lambda: not self.filter_mode
-            and self._pending_delete_session is None
-            and self._preview_session is None
-            and self.focus in {"app", "sessions"}
+            lambda: (
+                not self.filter_mode
+                and self._pending_delete_session is None
+                and self._preview_session is None
+                and self.focus in {"app", "sessions"}
+            )
         )
         sessions_scope = Condition(
-            lambda: self.focus == "sessions"
-            and not self.filter_mode
-            and self._preview_session is None
+            lambda: (
+                self.focus == "sessions" and not self.filter_mode and self._preview_session is None
+            )
         )
         provider_scope = Condition(
-            lambda: self.focus == "provider"
-            and not self.filter_mode
-            and self._preview_session is None
+            lambda: (
+                self.focus == "provider" and not self.filter_mode and self._preview_session is None
+            )
         )
         pending_delete = Condition(
-            lambda: self._pending_delete_session is not None
-            and self._preview_session is None
+            lambda: self._pending_delete_session is not None and self._preview_session is None
         )
 
         @bindings.add("a", filter=scope_toggleable, eager=True)
@@ -2884,12 +2879,14 @@ class _LaunchScreen:
             self._set_active_filter("")
 
         typing_start = Condition(
-            lambda: not self.filter_mode
-            and not self._show_help
-            and not self._show_cwd_selector
-            and self._pending_delete_session is None
-            and self._preview_session is None
-            and self.focus in {"provider", "sessions"}
+            lambda: (
+                not self.filter_mode
+                and not self._show_help
+                and not self._show_cwd_selector
+                and self._pending_delete_session is None
+                and self._preview_session is None
+                and self.focus in {"provider", "sessions"}
+            )
         )
 
         # Bind printable characters explicitly. Never use eager ``<any>``:
@@ -2910,32 +2907,38 @@ class _LaunchScreen:
             if ch in {"n", "d", "p", " "}:
                 # Covered by session pane shortcuts when focus is sessions.
                 start_filter = Condition(
-                    lambda: not self.filter_mode
-                    and not self._show_help
-                    and not self._show_cwd_selector
-                    and self._pending_delete_session is None
-                    and self._preview_session is None
-                    and self.focus == "provider"
+                    lambda: (
+                        not self.filter_mode
+                        and not self._show_help
+                        and not self._show_cwd_selector
+                        and self._pending_delete_session is None
+                        and self._preview_session is None
+                        and self.focus == "provider"
+                    )
                 )
             elif ch in {"a", "?", "c"}:
                 # Covered by scope toggle / help modal / cwd selector when focus is app or sessions.
                 start_filter = Condition(
-                    lambda: not self.filter_mode
-                    and not self._show_help
-                    and not self._show_cwd_selector
-                    and self._pending_delete_session is None
-                    and self._preview_session is None
-                    and self.focus == "provider"
+                    lambda: (
+                        not self.filter_mode
+                        and not self._show_help
+                        and not self._show_cwd_selector
+                        and self._pending_delete_session is None
+                        and self._preview_session is None
+                        and self.focus == "provider"
+                    )
                 )
             elif ch == "t":
                 # Covered by provider test shortcut when focus is provider.
                 start_filter = Condition(
-                    lambda: not self.filter_mode
-                    and not self._show_help
-                    and not self._show_cwd_selector
-                    and self._pending_delete_session is None
-                    and self._preview_session is None
-                    and self.focus == "sessions"
+                    lambda: (
+                        not self.filter_mode
+                        and not self._show_help
+                        and not self._show_cwd_selector
+                        and self._pending_delete_session is None
+                        and self._preview_session is None
+                        and self.focus == "sessions"
+                    )
                 )
             else:
                 start_filter = typing_start

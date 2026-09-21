@@ -306,4 +306,3 @@ def test_provider_connectivity_auth_failure(monkeypatch: pytest.MonkeyPatch) -> 
     assert ok is False
     assert "Auth failed" in msg
     assert "HTTP 401" in msg
-

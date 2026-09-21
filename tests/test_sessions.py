@@ -408,5 +408,3 @@ def test_read_session_messages_claude(tmp_path: Path) -> None:
     assert messages[0].text == "summarize the PR"
     assert messages[1].role == "assistant"
     assert messages[1].text == "Here is the summary"
-
-
