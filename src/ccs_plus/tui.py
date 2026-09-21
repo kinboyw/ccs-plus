@@ -49,6 +49,7 @@ from ccs_plus.domain import (
     ProviderError,
 )
 from ccs_plus.launch_history import LaunchHistory
+from ccs_plus.launcher import prewarm_launch_environment
 from ccs_plus.sessions import (
     Session,
     SessionMessage,
@@ -535,6 +536,18 @@ class _LaunchScreen:
         self._sync_permission_selection()
         self._ensure_session_visible()
         self._build_application()
+        self._trigger_prewarm()
+
+    def _trigger_prewarm(self) -> None:
+        provider = self.current_provider
+        if provider is None:
+            return
+        cwd = self.default_cwd
+        threading.Thread(
+            target=prewarm_launch_environment,
+            args=(provider, self.settings, cwd),
+            daemon=True,
+        ).start()
 
     def run(self) -> LaunchPlan | None:
         result: LaunchPlan | None = self.application.run()
@@ -782,6 +795,7 @@ class _LaunchScreen:
         self._ensure_provider_visible()
         self._ensure_session_visible()
         self._sync_layout_focus()
+        self._trigger_prewarm()
 
     def _set_session(self, index: int) -> None:
         if self._pending_delete_session is not None:
@@ -1040,6 +1054,7 @@ class _LaunchScreen:
         self._clamp_session_index()
         self.status = f"Working directory set to: {_short_path(str(self.default_cwd))}"
         self.status_error = False
+        self._trigger_prewarm()
 
     def _navigate_cwd(self, delta: int) -> None:
         count = len(self.filtered_directories)

@@ -419,11 +419,15 @@ def _link_one(source: Path, target: Path) -> None:
             logger.warning("Failed to replace target %s: %s", target, exc)
             return
 
+    resolved_source = source.resolve() if source.is_symlink() else source
+    if not resolved_source.exists():
+        return
+
     try:
-        if source.is_dir() and not source.is_symlink():
-            _link_directory(source, target)
+        if resolved_source.is_dir():
+            _link_directory(resolved_source, target)
         else:
-            _link_file(source, target)
+            _link_file(resolved_source, target)
     except FileExistsError:
         return
     except OSError as exc:
@@ -551,6 +555,12 @@ def _link_destination_exists(link: Path) -> bool:
 
 
 def _links_to(link: Path, source: Path) -> bool:
+    try:
+        raw_dest = os.readlink(link)
+        if raw_dest in (os.fspath(source), os.fspath(source.resolve())):
+            return True
+    except OSError:
+        pass
     destination = _read_link_destination(link)
     if destination is None:
         return False
