@@ -27,14 +27,13 @@
 
 ```bash
 uv tool install ./ccs_plus-x.y.z-py3-none-any.whl   # wheel，需 Python 3.12+
-cp .env.example .env                                 # 填入 Fernet key
 ```
 
-| 安装方式 | `settings.yaml` / `.env` |
+| 安装方式 | 配置位置 |
 | --- | --- |
-| 二进制 | exe 同目录；没有文件时使用内嵌默认配置 |
-| wheel | 当前工作目录 |
-| 源码 | 仓库根目录 |
+| 二进制 | exe 同目录，缺少配置时使用内置默认值 |
+| wheel | 内置 `settings.yaml`；覆盖项写入 `~/.ccs-plus/.env` |
+| 源码安装 | 项目根目录 |
 
 ## 使用
 

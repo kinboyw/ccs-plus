@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -16,23 +20,40 @@ ENCRYPTION_KEY_EXAMPLE = "replace-with-a-fernet-key"
 SETTINGS_FILE = "settings.yaml"
 
 
-def _runtime_root() -> Path:
-    """Return the directory that owns ``settings.yaml`` and ``.env``.
-
-    Frozen binaries use the executable directory. Source checkouts use the
-    repository root. Installed wheels fall back to the current working directory.
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    if (PROJECT_ROOT / SETTINGS_FILE).is_file():
+def _source_root() -> Path | None:
+    if (PROJECT_ROOT / "pyproject.toml").is_file() and (PROJECT_ROOT / SETTINGS_FILE).is_file():
         return PROJECT_ROOT
-    return Path.cwd()
+
+    # A tool installed from a source directory has a copied package, but its
+    # direct_url.json still identifies that directory.
+    try:
+        direct_url = distribution("ccs-plus").read_text("direct_url.json")
+    except PackageNotFoundError:
+        return None
+    if direct_url is None:
+        return None
+    try:
+        origin = json.loads(direct_url)
+        url = urlparse(origin["url"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if url.scheme != "file" or not isinstance(origin.get("dir_info"), dict):
+        return None
+    path = url2pathname(url.path)
+    source_root = Path(f"//{url.netloc}{path}" if url.netloc else path)
+    if (source_root / "pyproject.toml").is_file() and (source_root / SETTINGS_FILE).is_file():
+        return source_root
+    return None
 
 
 def _bundled_settings_path() -> Path:
     """Return the settings file embedded by PyInstaller, when present."""
     bundle_root = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
     return bundle_root / SETTINGS_FILE
+
+
+def _default_settings_path() -> Path:
+    return Path(__file__).with_name("default_settings.yaml")
 
 
 @dataclass(frozen=True)
@@ -243,11 +264,22 @@ def _get_or_default(config: Dynaconf, key: str, default: object) -> object:
 
 
 def load_settings(project_root: Path | None = None) -> AppSettings:
-    root = (project_root or _runtime_root()).resolve()
+    if project_root is not None:
+        root = project_root.resolve()
+        settings_path = root / SETTINGS_FILE
+    elif getattr(sys, "frozen", False):
+        root = Path(sys.executable).resolve().parent
+        settings_path = root / SETTINGS_FILE
+        if not settings_path.is_file():
+            settings_path = _bundled_settings_path()
+    else:
+        source_root = _source_root()
+        root = (source_root or Path.home() / ".ccs-plus").resolve()
+        settings_path = (
+            root / SETTINGS_FILE if source_root is not None else _default_settings_path()
+        )
+
     load_dotenv(root / ".env", override=False)
-    settings_path = root / SETTINGS_FILE
-    if not settings_path.is_file() and project_root is None and getattr(sys, "frozen", False):
-        settings_path = _bundled_settings_path()
     if not settings_path.is_file():
         raise ProviderError(f"Configuration file is missing: {settings_path}")
     config = Dynaconf(

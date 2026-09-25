@@ -9,8 +9,8 @@
 database:
   path: "~/.cc-switch/cc-switch.db"
 
-# Fernet key for providers export/import. Prefer setting via .env.
-encryption_key: ""
+# Default Fernet key is 32 zero bytes. Override it before creating private backups.
+encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 # Global network proxy for all launched CLIs. An empty value clears inherited proxies.
 proxy: ""
