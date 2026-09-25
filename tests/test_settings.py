@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,23 +98,75 @@ def test_frozen_binary_prefers_settings_next_to_executable(
     assert settings.proxy == "http://local-proxy:7890"
 
 
-def test_installed_package_uses_cwd_when_project_root_has_no_settings(
-    settings_root, monkeypatch, tmp_path: Path
-) -> None:
-    missing_root = tmp_path / "site-packages-parent"
-    missing_root.mkdir()
-    runtime_root = tmp_path / "workdir"
-    runtime_root.mkdir()
-    (runtime_root / "settings.yaml").write_text(
-        (settings_root / "settings.yaml").read_text(encoding="utf-8"),
-        encoding="utf-8",
+def test_installed_wheel_uses_home_with_bundled_settings(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("ccs_plus.settings._source_root", lambda: None)
+    monkeypatch.setattr(
+        "ccs_plus.settings._default_settings_path",
+        lambda: Path(__file__).resolve().parents[1] / "settings.yaml",
     )
-    monkeypatch.setattr("ccs_plus.settings.PROJECT_ROOT", missing_root)
-    monkeypatch.chdir(runtime_root)
+    monkeypatch.chdir(workdir)
 
     settings = load_settings()
 
-    assert settings.project_root == runtime_root.resolve()
+    assert settings.project_root == home / ".ccs-plus"
+    assert settings.claude.home == home / ".ccs-plus" / "data" / "claude"
+    assert settings.encryption_key == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+
+def test_installed_wheel_ignores_home_yaml_and_reads_home_env(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    config_root = home / ".ccs-plus"
+    config_root.mkdir(parents=True)
+    (config_root / "settings.yaml").write_text(
+        'encryption_key: "invalid-user-yaml-key"\nproxy: http://user-yaml-proxy:7890\n',
+        encoding="utf-8",
+    )
+    (config_root / ".env").write_text("CCS_PLUS_PROXY=http://home-proxy:7890\n", encoding="utf-8")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    (workdir / ".env").write_text("CCS_PLUS_PROXY=http://cwd-proxy:7890\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("ccs_plus.settings._source_root", lambda: None)
+    monkeypatch.setattr(
+        "ccs_plus.settings._default_settings_path",
+        lambda: Path(__file__).resolve().parents[1] / "settings.yaml",
+    )
+    monkeypatch.chdir(workdir)
+
+    settings = load_settings()
+
+    assert settings.project_root == config_root
+    assert settings.proxy == "http://home-proxy:7890"
+    assert settings.encryption_key == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+
+def test_source_tool_install_uses_project_config(
+    settings_root, monkeypatch, tmp_path: Path
+) -> None:
+    source_root = settings_root.rename(tmp_path / "source%20root")
+    (source_root / "pyproject.toml").write_text('[project]\nname = "ccs-plus"\n', encoding="utf-8")
+    (source_root / ".env").write_text("CCS_PLUS_PROXY=http://source-proxy:7890\n", encoding="utf-8")
+    package_parent = tmp_path / "site-packages-parent"
+    package_parent.mkdir()
+    monkeypatch.setattr("ccs_plus.settings.PROJECT_ROOT", package_parent)
+    direct_url = json.dumps({"url": source_root.as_uri(), "dir_info": {}})
+    monkeypatch.setattr(
+        "ccs_plus.settings.distribution",
+        lambda _: SimpleNamespace(read_text=lambda _: direct_url),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.project_root == source_root
+    assert settings.proxy == "http://source-proxy:7890"
 
 
 def test_environment_overrides_nested_settings(settings_root, monkeypatch) -> None:

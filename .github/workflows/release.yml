@@ -98,6 +98,8 @@ jobs:
               names = archive.namelist()
               if not any(name.startswith(package_path) for name in names):
                   raise SystemExit(f"wheel does not contain {package_path!r}")
+              if package_path + "default_settings.yaml" not in names:
+                  raise SystemExit("wheel has no default settings")
               metadata_name = next((name for name in names if name.endswith(".dist-info/METADATA")), None)
               if metadata_name is None:
                   raise SystemExit("wheel has no dist-info/METADATA")
@@ -118,6 +120,7 @@ jobs:
           "$check_python" -m pip install --disable-pip-version-check --no-input "$wheel"
           "$check_python" -c "import importlib; importlib.import_module('$PACKAGE_IMPORT')"
           "$check_dir/bin/$RELEASE_COMMAND" --help >/dev/null
+          (cd "$RUNNER_TEMP" && HOME="$check_dir/home" "$check_python" -c 'from ccs_plus.settings import load_settings; from pathlib import Path; s = load_settings(); assert s.project_root == (Path.home() / ".ccs-plus").resolve(); assert s.encryption_key == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="')
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

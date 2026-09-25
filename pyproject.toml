@@ -33,6 +33,9 @@ ccsp = "ccs_plus.cli:main"
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel.force-include]
+"settings.yaml" = "ccs_plus/default_settings.yaml"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
