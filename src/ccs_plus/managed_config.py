@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -13,6 +14,7 @@ import portalocker
 import tomlkit
 from tomlkit import TOMLDocument
 
+from ccs_plus.codex_catalog import build_model_catalog
 from ccs_plus.domain import CodexRuntime, GrokRuntime, ProviderError, RuntimeProvider
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,14 @@ class CodexManagedConfig(ManagedConfig):
         profile = _managed_name(self.runtime, "codex")
         env_key = _managed_env_key(self.runtime, "CODEX")
         path = self.runtime_home / f"{profile}.config.toml"
+        catalog_path = self.runtime_home / f"{profile}.model-catalog.json"
         marker = _marker(self.runtime)
+        catalog = build_model_catalog(
+            self.runtime.model_catalog,
+            self.model or self.runtime.model,
+            self.effort or self.runtime.effort,
+        )
+        catalog["_ccs_plus_managed"] = marker
         approval_policy = _required(
             self.approval_policy or self.runtime.approval_policy,
             "Codex approval_policy",
@@ -60,9 +69,16 @@ class CodexManagedConfig(ManagedConfig):
             if content and marker not in content:
                 raise ProviderError(f"Refusing to overwrite unmanaged Codex profile: {path}")
             existing = self._parse(content, path) if content else None
+            if (catalog_path.exists() or catalog_path.is_symlink()) and not self._owns_catalog(
+                catalog_path, marker
+            ):
+                raise ProviderError(
+                    f"Refusing to overwrite unmanaged Codex catalog: {catalog_path}"
+                )
             document = tomlkit.document()
             document.add(tomlkit.comment(marker))
             document["model_provider"] = self.session_model_provider
+            document["model_catalog_json"] = catalog_path.name
             if self.model:
                 document["model"] = self.model
             if self.effort:
@@ -84,6 +100,9 @@ class CodexManagedConfig(ManagedConfig):
             provider["env_key"] = env_key
             providers[self.session_model_provider] = provider
             document["model_providers"] = providers
+            _write_atomic(
+                catalog_path, json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", locked=True
+            )
             _write_atomic(path, tomlkit.dumps(document), locked=True)
         return ManagedProfile(name=profile, env_key=env_key)
 
@@ -106,27 +125,48 @@ class CodexManagedConfig(ManagedConfig):
             raise ProviderError(f"Managed Codex profile is invalid TOML: {path}: {exc}") from exc
 
     @staticmethod
+    def _owns_catalog(path: Path, marker: str) -> bool:
+        if path.is_symlink():
+            return False
+        try:
+            catalog = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(catalog, dict) and catalog.get("_ccs_plus_managed") == marker
+
+    @staticmethod
     def remove(runtime_home: Path, provider_id: str) -> bool:
         profile = _managed_name_for_provider_id(provider_id, "codex")
         path = runtime_home / f"{profile}.config.toml"
+        catalog_path = runtime_home / f"{profile}.model-catalog.json"
         marker = f"ccs-plus-managed: codex:{provider_id}"
+        removed = False
         with _locked(path):
-            if not path.is_file():
-                return False
-            try:
-                content = path.read_text(encoding="utf-8")
-            except OSError as exc:
-                logger.warning("Unable to read Codex profile for cleanup %s: %s", path, exc)
-                return False
-            if marker not in content:
-                logger.warning("Refusing to delete unmanaged Codex profile: %s", path)
-                return False
-            try:
-                path.unlink()
-            except OSError as exc:
-                logger.warning("Unable to delete Codex profile %s: %s", path, exc)
-                return False
-        return True
+            if path.is_file():
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    logger.warning("Unable to read Codex profile for cleanup %s: %s", path, exc)
+                    return False
+                if marker not in content:
+                    logger.warning("Refusing to delete unmanaged Codex profile: %s", path)
+                    return False
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    logger.warning("Unable to delete Codex profile %s: %s", path, exc)
+                    return False
+                removed = True
+            if catalog_path.exists() or catalog_path.is_symlink():
+                if not CodexManagedConfig._owns_catalog(catalog_path, marker):
+                    logger.warning("Refusing to delete unmanaged Codex catalog: %s", catalog_path)
+                else:
+                    try:
+                        catalog_path.unlink()
+                        removed = True
+                    except OSError as exc:
+                        logger.warning("Unable to delete Codex catalog %s: %s", catalog_path, exc)
+        return removed
 
 
 @dataclass(frozen=True)

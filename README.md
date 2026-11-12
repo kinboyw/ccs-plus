@@ -67,6 +67,10 @@ ccsp launch opencode --provider "<provider-name>" --cwd "<directory>"
 
 `run` 使用 `provider list` 里的编号（`c1` / `x2` / `m1` / `g1` / `o1`）。`launch --cwd` 指定工作目录；`--model` 和 `--effort` 只覆盖本次启动。
 
+Codex 受管启动会查询所选 provider 的 `<base_url>/models`，合并该 provider 自定义的模型元数据，生成本次 `/model` 列表；查询失败则回退到自定义目录或默认模型，不影响启动。官方 provider 保留 Codex 原生行为。
+
+Codex 当前直接使用真实 `~/.codex`，而非隔离目录加扩展链接，配置边界见 [Runtime Home 可见性](docs/guides/runtime-home-visibility.md)。
+
 ### 管理 provider
 
 ```bash

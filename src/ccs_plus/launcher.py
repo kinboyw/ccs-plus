@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ccs_plus.adapters import runtime_from_provider
@@ -21,6 +21,7 @@ from ccs_plus.domain import (
 )
 from ccs_plus.home_visibility import home_visibility_for
 from ccs_plus.managed_config import ensure_managed_config
+from ccs_plus.model_discovery import discover_model_catalog
 from ccs_plus.sessions import Session
 from ccs_plus.settings import AppSettings, environment_with_defaults
 
@@ -138,6 +139,7 @@ class CodexLauncher(RuntimeLauncher):
             argv.extend(["resume", self.session_id])
         managed = None if self.runtime.provider.is_official else self.runtime
         if managed is not None:
+            managed = replace(managed, model_catalog=discover_model_catalog(managed, self.env))
             profile = ensure_managed_config(
                 managed,
                 self.runtime_home,

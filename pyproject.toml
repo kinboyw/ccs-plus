@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.4,<9",
     "cryptography>=50.0.0",
     "dynaconf>=3.3,<4",
+    "httpx[socks]>=0.28,<1",
     "portalocker>=3.2,<4",
     "prompt-toolkit>=3.0.53",
     "python-dotenv>=1.2,<2",

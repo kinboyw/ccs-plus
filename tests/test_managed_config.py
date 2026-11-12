@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 import pytest
 import tomlkit
 
@@ -209,6 +212,138 @@ def test_codex_profiles_share_model_provider_across_providers(tmp_path) -> None:
 def test_codex_profile_requires_configured_session_model_provider(tmp_path) -> None:
     with pytest.raises(ProviderError, match="session_model_provider"):
         _ensure_managed_config(_runtime(AppKind.CODEX), tmp_path, None, None)
+
+
+def test_codex_profile_owns_a_catalog_without_touching_cc_switch_config(tmp_path) -> None:
+    runtime = _runtime(AppKind.CODEX)
+    base_path = tmp_path / "config.toml"
+    base_content = 'model_catalog_json = "cc-switch-model-catalog.json"\n'
+    base_path.write_text(base_content, encoding="utf-8")
+    shared_path = tmp_path / "cc-switch-model-catalog.json"
+    shared_content = '{"models": [{"slug": "unrelated-gpt-model"}]}\n'
+    shared_path.write_text(shared_content, encoding="utf-8")
+
+    profile = ensure_managed_config(runtime, tmp_path, None, None)
+    profile_path = tmp_path / f"{profile.name}.config.toml"
+    document = tomlkit.parse(profile_path.read_text(encoding="utf-8"))
+    catalog_path = tmp_path / document["model_catalog_json"]
+    catalog_content = catalog_path.read_text(encoding="utf-8")
+    catalog = json.loads(catalog_content)
+
+    assert catalog_path.name == f"{profile.name}.model-catalog.json"
+    assert [entry["slug"] for entry in catalog["models"]] == ["example-model"]
+    assert catalog["_ccs_plus_managed"] == f"ccs-plus-managed: codex:{runtime.provider.id}"
+    assert "managed-secret-key" not in catalog_content
+    assert base_path.read_text(encoding="utf-8") == base_content
+    assert shared_path.read_text(encoding="utf-8") == shared_content
+    first_profile = profile_path.read_bytes()
+    first_catalog = catalog_path.read_bytes()
+
+    assert ensure_managed_config(runtime, tmp_path, None, None) == profile
+    assert profile_path.read_bytes() == first_profile
+    assert catalog_path.read_bytes() == first_catalog
+
+
+def test_codex_catalogs_are_isolated_and_refreshed_from_provider_settings(tmp_path) -> None:
+    first = _runtime(AppKind.CODEX)
+    first.provider.settings_config["modelCatalog"] = {
+        "models": [{"model": "grok-4.7"}, {"model": "grok-4.5"}]
+    }
+    first = runtime_from_provider(first.provider)
+    second_provider = replace(
+        first.provider,
+        id="second-provider",
+        settings_config={
+            **first.provider.settings_config,
+            "modelCatalog": {"models": [{"model": "second-model"}]},
+        },
+    )
+    second = runtime_from_provider(second_provider)
+
+    first_profile = ensure_managed_config(first, tmp_path, "grok-4.7", None)
+    second_profile = ensure_managed_config(second, tmp_path, "second-model", None)
+    first_path = tmp_path / f"{first_profile.name}.model-catalog.json"
+    second_path = tmp_path / f"{second_profile.name}.model-catalog.json"
+    second_content = second_path.read_bytes()
+
+    assert first_path != second_path
+    assert [entry["slug"] for entry in json.loads(first_path.read_text())["models"]] == [
+        "grok-4.7",
+        "grok-4.5",
+    ]
+    assert [entry["slug"] for entry in json.loads(second_content)["models"]] == ["second-model"]
+
+    first.provider.settings_config.pop("modelCatalog")
+    ensure_managed_config(runtime_from_provider(first.provider), tmp_path, "grok-4.7", None)
+
+    assert [entry["slug"] for entry in json.loads(first_path.read_text())["models"]] == ["grok-4.7"]
+    assert second_path.read_bytes() == second_content
+
+    assert remove_managed_config(tmp_path, first.provider.id) is True
+    assert not first_path.exists()
+    assert second_path.read_bytes() == second_content
+
+
+@pytest.mark.parametrize("content", ['{"models": []}', '{"_ccs_plus_managed": "other"}', "broken"])
+def test_codex_catalog_refuses_to_overwrite_or_delete_unmanaged_files(tmp_path, content) -> None:
+    runtime = _runtime(AppKind.CODEX)
+    profile = ensure_managed_config(runtime, tmp_path, None, None)
+    catalog_path = tmp_path / f"{profile.name}.model-catalog.json"
+    catalog_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ProviderError, match="unmanaged Codex catalog"):
+        ensure_managed_config(runtime, tmp_path, None, None)
+    assert catalog_path.read_text(encoding="utf-8") == content
+    assert remove_managed_config(tmp_path, runtime.provider.id) is True
+    assert catalog_path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_codex_catalog_refuses_symlinks_even_with_matching_marker(tmp_path, dangling) -> None:
+    runtime = _runtime(AppKind.CODEX)
+    profile = ensure_managed_config(runtime, tmp_path, None, None)
+    catalog_path = tmp_path / f"{profile.name}.model-catalog.json"
+    target = tmp_path / "user-catalog.json"
+    content = catalog_path.read_text(encoding="utf-8")
+    if not dangling:
+        target.write_text(content, encoding="utf-8")
+    catalog_path.unlink()
+    catalog_path.symlink_to(target)
+
+    with pytest.raises(ProviderError, match="unmanaged Codex catalog"):
+        ensure_managed_config(runtime, tmp_path, None, None)
+    assert remove_managed_config(tmp_path, runtime.provider.id) is True
+    assert catalog_path.is_symlink()
+    assert target.exists() is not dangling
+    if not dangling:
+        assert target.read_text(encoding="utf-8") == content
+
+
+def test_codex_cleanup_removes_only_the_providers_owned_catalog(tmp_path) -> None:
+    runtime = _runtime(AppKind.CODEX)
+    profile = ensure_managed_config(runtime, tmp_path, None, None)
+    profile_path = tmp_path / f"{profile.name}.config.toml"
+    catalog_path = tmp_path / f"{profile.name}.model-catalog.json"
+    shared_path = tmp_path / "cc-switch-model-catalog.json"
+    shared_path.write_text("shared catalog", encoding="utf-8")
+    document = tomlkit.parse(profile_path.read_text(encoding="utf-8"))
+    document["model_catalog_json"] = shared_path.name
+    profile_path.write_text(tomlkit.dumps(document), encoding="utf-8")
+
+    assert remove_managed_config(tmp_path, runtime.provider.id) is True
+    assert not profile_path.exists()
+    assert not catalog_path.exists()
+    assert shared_path.read_text(encoding="utf-8") == "shared catalog"
+    assert remove_managed_config(tmp_path, runtime.provider.id) is False
+
+
+def test_codex_cleanup_removes_an_orphaned_owned_catalog(tmp_path) -> None:
+    runtime = _runtime(AppKind.CODEX)
+    profile = ensure_managed_config(runtime, tmp_path, None, None)
+    (tmp_path / f"{profile.name}.config.toml").unlink()
+
+    assert remove_managed_config(tmp_path, runtime.provider.id) is True
+    assert not (tmp_path / f"{profile.name}.model-catalog.json").exists()
 
 
 def test_grok_config_preserves_default_and_uses_managed_model(tmp_path) -> None:

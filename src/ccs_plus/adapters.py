@@ -11,6 +11,7 @@ from typing import Any
 import tomlkit
 from tomlkit import TOMLDocument
 
+from ccs_plus.codex_catalog import parse_model_catalog
 from ccs_plus.domain import (
     AppKind,
     ClaudeRuntime,
@@ -358,6 +359,9 @@ def _profile_runtime(provider: Provider) -> CodexRuntime:
         effort=_as_string(_value(document.get("model_reasoning_effort"))),
         approval_policy=_as_string(_value(document.get("approval_policy"))),
         sandbox_mode=_as_string(_value(document.get("sandbox_mode"))),
+        model_catalog=parse_model_catalog(
+            provider.settings_config.get("modelCatalog"), provider.id
+        ),
     )
 
 

@@ -173,6 +173,16 @@ wire_api = "chat"
         runtime_from_provider(provider)
 
 
+def test_codex_runtime_reads_the_selected_providers_model_catalog() -> None:
+    provider = build_provider(_new_value(AppKind.CODEX), _CODEX)
+    provider.settings_config["modelCatalog"] = {"models": [{"model": "grok-4.7"}]}
+
+    runtime = runtime_from_provider(provider)
+
+    assert isinstance(runtime, CodexRuntime)
+    assert [model.slug for model in runtime.model_catalog] == ["grok-4.7"]
+
+
 def test_opencode_runtime_parses_cc_switch_native_provider_shape() -> None:
     provider = Provider(
         id="nunu-grok",

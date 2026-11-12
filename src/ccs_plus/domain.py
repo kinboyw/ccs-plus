@@ -202,11 +202,21 @@ class GeminiRuntime(RuntimeProvider):
 
 
 @dataclass(frozen=True)
+class CodexModel:
+    slug: str
+    display_name: str
+    context_window: int | None = None
+    input_modalities: tuple[str, ...] = ("text",)
+    reasoning_levels: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CodexRuntime(RuntimeProvider):
-    """Codex-specific permission settings."""
+    """Codex-specific permission settings and provider model catalog."""
 
     approval_policy: str | None = None
     sandbox_mode: str | None = None
+    model_catalog: tuple[CodexModel, ...] = ()
 
     def with_permission_defaults(self, settings: AppSettings) -> Self:
         return replace(

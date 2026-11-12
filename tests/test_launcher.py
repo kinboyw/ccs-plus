@@ -5,6 +5,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import pytest
 import tomlkit
 from conftest import make_app_settings
@@ -12,6 +13,7 @@ from conftest import make_app_settings
 from ccs_plus.adapters import build_provider
 from ccs_plus.domain import AppKind, CodexAppConfig, NewProvider, Provider, ProviderError
 from ccs_plus.launcher import LaunchSpec, _is_user_home_directory, build_launch_spec, launch
+from ccs_plus.model_discovery import discover_model_catalog
 from ccs_plus.settings import AppSettings
 
 _CODEX = CodexAppConfig(approval_policy="never", sandbox_mode="danger-full-access")
@@ -23,6 +25,14 @@ _PROXY_ENV_KEYS = (
     "https_proxy",
     "all_proxy",
 )
+
+
+@pytest.fixture(autouse=True)
+def _offline_model_discovery(monkeypatch):
+    monkeypatch.setattr(
+        "ccs_plus.launcher.discover_model_catalog",
+        lambda runtime, environment: runtime.model_catalog,
+    )
 
 
 def _settings(root: Path) -> AppSettings:
@@ -588,6 +598,73 @@ command = "mks-ttyd"
     assert "mks-ttyd" not in profile_text
     assert "--cd" not in spec.argv
     assert "--add-dir" not in spec.argv
+
+
+def test_codex_launch_catalog_follows_selected_provider_not_global_current_provider(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("ccs_plus.launcher.shutil.which", lambda _: "native-codex")
+    user_home = tmp_path / "user-codex"
+    user_home.mkdir()
+    base_content = 'model = "global-gpt"\nmodel_catalog_json = "cc-switch-model-catalog.json"\n'
+    shared_content = '{"models": [{"slug": "global-gpt"}]}\n'
+    (user_home / "config.toml").write_text(base_content, encoding="utf-8")
+    (user_home / "cc-switch-model-catalog.json").write_text(shared_content, encoding="utf-8")
+    settings = make_app_settings(tmp_path, codex_user_home=user_home)
+    provider = _provider(AppKind.CODEX, model="grok-4.7")
+    provider.settings_config["modelCatalog"] = {
+        "models": [{"model": "grok-4.7"}, {"model": "grok-4.5"}]
+    }
+
+    spec = build_launch_spec(provider, settings, tmp_path)
+
+    profile_name = spec.argv[spec.argv.index("--profile") + 1]
+    document = tomlkit.parse(
+        (user_home / f"{profile_name}.config.toml").read_text(encoding="utf-8")
+    )
+    catalog = json.loads((user_home / document["model_catalog_json"]).read_text(encoding="utf-8"))
+    assert [entry["slug"] for entry in catalog["models"]] == ["grok-4.7", "grok-4.5"]
+    assert document["model"] == "grok-4.7"
+    assert spec.env["CODEX_HOME"] == str(user_home)
+    assert (user_home / "config.toml").read_text(encoding="utf-8") == base_content
+    assert (user_home / "cc-switch-model-catalog.json").read_text(
+        encoding="utf-8"
+    ) == shared_content
+
+
+def test_codex_launch_discovers_upstream_models_when_only_default_is_configured(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("ccs_plus.launcher.shutil.which", lambda _: "native-codex")
+    monkeypatch.setattr("ccs_plus.launcher.discover_model_catalog", discover_model_catalog)
+    client_type = httpx.Client
+    requests = []
+    options = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"data": [{"id": "grok-4.7"}, {"id": "grok-4.5"}]})
+
+    def client(**kwargs):
+        options.append(kwargs)
+        return client_type(transport=httpx.MockTransport(respond), trust_env=False)
+
+    monkeypatch.setattr("ccs_plus.model_discovery.httpx.Client", client)
+    settings = make_app_settings(tmp_path, proxy="socks5://proxy:1080")
+    provider = _provider(AppKind.CODEX, endpoint="https://selected.test/v1", model="grok-4.7")
+
+    spec = build_launch_spec(provider, settings, tmp_path)
+
+    home = Path(spec.env["CODEX_HOME"])
+    profile = spec.argv[spec.argv.index("--profile") + 1]
+    document = tomlkit.parse((home / f"{profile}.config.toml").read_text(encoding="utf-8"))
+    catalog = json.loads((home / document["model_catalog_json"]).read_text(encoding="utf-8"))
+    assert [entry["slug"] for entry in catalog["models"]] == ["grok-4.7", "grok-4.5"]
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://selected.test/v1/models"
+    assert requests[0].headers["Authorization"] == "Bearer launch-secret-key"
+    assert options[0]["proxy"] == "socks5://proxy:1080"
+    assert "modelCatalog" not in provider.settings_config
 
 
 def test_codex_direct_launch_uses_the_real_user_config_without_writing_it(
