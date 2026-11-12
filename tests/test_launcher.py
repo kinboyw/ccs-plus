@@ -554,18 +554,15 @@ def test_official_claude_does_not_inherit_custom_route(tmp_path, monkeypatch) ->
 def test_launch_returns_child_exit_code(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
-    class Completed:
-        returncode = 7
-
     def fake_run(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return Completed()
+        return 7
 
-    monkeypatch.setattr("ccs_plus.launcher.subprocess.run", fake_run)
+    monkeypatch.setattr("ccs_plus.launcher.run_process", fake_run)
     spec = LaunchSpec(argv=("native-cli",), cwd=tmp_path, env={})
     assert launch(spec) == 7
-    assert captured["kwargs"] == {"cwd": tmp_path, "env": {}, "check": False}
+    assert captured["kwargs"] == {"cwd": tmp_path, "env": {}}
 
 
 def test_codex_launch_uses_the_real_user_home_without_projection(tmp_path, monkeypatch) -> None:
@@ -968,10 +965,7 @@ def test_launch_preserves_project_working_directory(tmp_path, monkeypatch, app: 
 
 
 def test_launch_logs_argv_and_exit_code_without_environment(monkeypatch, tmp_path, caplog) -> None:
-    class Completed:
-        returncode = 0
-
-    monkeypatch.setattr("ccs_plus.launcher.subprocess.run", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr("ccs_plus.launcher.run_process", lambda *args, **kwargs: 0)
     spec = LaunchSpec(
         argv=("native-cli", "--model", "example-model"),
         cwd=tmp_path,
@@ -1025,20 +1019,7 @@ def test_prewarm_launch_environment_caches_visibility(tmp_path, monkeypatch) -> 
     assert calls == ["applied"]
 
 
-def test_launch_supports_replace_process(tmp_path, monkeypatch) -> None:
-    executed = []
-
-    class Completed:
-        returncode = 0
-
-    monkeypatch.setattr("os.chdir", lambda path: executed.append(("chdir", path)))
-    monkeypatch.setattr(
-        "os.execvpe",
-        lambda file, argv, env: executed.append(("execvpe", file, argv)),
-    )
-    monkeypatch.setattr("ccs_plus.launcher.subprocess.run", lambda *args, **kwargs: Completed())
-
+def test_launch_normalizes_signal_exit_code(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("ccs_plus.launcher.run_process", lambda *args, **kwargs: -15)
     spec = LaunchSpec(argv=("native-cli", "run"), cwd=tmp_path, env={"KEY": "VAL"})
-    launch(spec, replace_process=True)
-    assert ("chdir", tmp_path) in executed
-    assert ("execvpe", "native-cli", ["native-cli", "run"]) in executed
+    assert launch(spec) == 143

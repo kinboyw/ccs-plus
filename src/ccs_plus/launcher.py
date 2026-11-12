@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from ccs_plus.managed_config import ensure_managed_config
 from ccs_plus.model_discovery import discover_model_catalog
 from ccs_plus.sessions import Session
 from ccs_plus.settings import AppSettings, environment_with_defaults
+from ccs_plus.terminal import run_process
 
 logger = logging.getLogger(__name__)
 PROXY_ENV_KEYS = (
@@ -484,17 +484,11 @@ def runtime_launcher_for(
     raise ProviderError(f"Unsupported runtime: {type(runtime).__name__}.")
 
 
-def launch(spec: LaunchSpec, *, replace_process: bool = False) -> int:
+def launch(spec: LaunchSpec) -> int:
     logger.info("Starting native CLI in %s with argv=%r", spec.cwd, spec.argv)
-    if replace_process and hasattr(os, "execvpe") and os.name != "nt":
-        try:
-            os.chdir(spec.cwd)
-            os.execvpe(spec.argv[0], list(spec.argv), spec.env)
-        except OSError as exc:
-            logger.warning("os.execvpe failed; falling back to subprocess: %s", exc)
-    completed = subprocess.run(list(spec.argv), cwd=spec.cwd, env=spec.env, check=False)
-    logger.info("Native CLI exited with code %s", completed.returncode)
-    return completed.returncode
+    returncode = run_process(spec.argv, cwd=spec.cwd, env=spec.env)
+    logger.info("Native CLI exited with code %s", returncode)
+    return returncode if returncode >= 0 else 128 - returncode
 
 
 def _required(value: str | None, label: str) -> str:

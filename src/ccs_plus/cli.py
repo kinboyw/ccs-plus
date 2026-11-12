@@ -403,10 +403,7 @@ def _launch_selected_provider(
 
 
 def _run_launch(spec: LaunchSpec) -> int:
-    try:
-        return launch(spec, replace_process=True)
-    except TypeError:
-        return launch(spec)
+    return launch(spec)
 
 
 def _launch_history_path(settings: AppSettings) -> Path:

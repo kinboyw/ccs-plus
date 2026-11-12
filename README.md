@@ -69,7 +69,7 @@ ccsp launch opencode --provider "<provider-name>" --cwd "<directory>"
 
 Codex 受管启动会查询所选 provider 的 `<base_url>/models`，合并该 provider 自定义的模型元数据，生成本次 `/model` 列表；查询失败则回退到自定义目录或默认模型，不影响启动。官方 provider 保留 Codex 原生行为。
 
-Codex 当前直接使用真实 `~/.codex`，而非隔离目录加扩展链接，配置边界见 [Runtime Home 可见性](docs/guides/runtime-home-visibility.md)。
+启动器保留父进程，在 agent 退出后恢复终端属性并关闭鼠标上报等交互模式；POSIX 下保留原生前台进程组和作业控制。异常退出与重定向行为见 [终端恢复](docs/guides/terminal-recovery.md)。Codex 当前直接使用真实 `~/.codex`，而非隔离目录加扩展链接，配置边界见 [Runtime Home 可见性](docs/guides/runtime-home-visibility.md)。
 
 ### 管理 provider
 
